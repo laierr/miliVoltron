@@ -1,0 +1,2 @@
+0.000000 RX IoT->BMS checksum=OK raw=5aa5013d2201300c62ff
+0.100000 RX IoT->BMS checksum=BAD raw=5aa5013d2201300c62fe

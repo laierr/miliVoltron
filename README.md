@@ -286,8 +286,6 @@ battery CSV under `bat-log/`. Supplying an optional prefix overrides the config:
 Extensions, directories, timestamps, and collision suffixes are completed
 automatically.
 
-
-
 ### BMS identity and reconnection
 
 Inquisitor requests BMS register `0x10` as a 16-byte block. Bytes 0–13 are the
@@ -299,3 +297,18 @@ identity and resting reference. After the first successful BMS reply on
 recovery, identity and health requests are inserted ahead of the remaining
 telemetry requests. This prevents a newly connected battery from being logged
 under the previous battery's serial or baseline.
+
+## Tests
+
+The test suite uses only the Python standard library:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+Fast protocol and poller tests run without hardware. Sanitized replay captures
+can be added under `tests/fixtures/logs`; supported formats and anonymization
+guidance are documented in that directory. Capture-based tests are skipped
+until fixtures are present.
+
+GitHub Actions runs the suite on Python 3.11, 3.12, and 3.13.

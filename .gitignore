@@ -10,6 +10,10 @@ bat-log/
 *.log
 *.jsonl
 *.csv
+!tests/fixtures/logs/*.log
+!tests/fixtures/logs/*.jsonl
+!tests/fixtures/logs/*.csv
+tests/fixtures/logs/iot-boot*
 
 .idea/
 .vscode/
