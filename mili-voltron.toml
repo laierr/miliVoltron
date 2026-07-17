@@ -1,0 +1,57 @@
+# miliVoltron defaults. Command-line options override these values.
+
+[serial]
+baud = 115200
+auto_detect = true
+
+[dashboard]
+refresh_hz = 5.0
+color = true
+recent_changes_limit = 8
+stale_after_s = 5.0
+
+[recent_changes]
+vehicle_state = true
+battery_mode = true
+error_code = true
+battery_latch = true
+bms_link = true
+wheel_moving = false
+left_indicator = false
+right_indicator = false
+
+[recent_changes.flags]
+bit_0 = false
+bit_1 = true
+bit_2 = true
+bit_3 = false
+bit_4 = false
+bit_5 = true
+bit_6 = true
+bit_7 = true
+
+[inquisitor]
+poll_interval_s = 3.0
+response_timeout_s = 0.35
+inter_request_gap_s = 0.01
+retries = 1
+startup_identity = true
+
+[battery]
+# A powered scooter may draw close to 1 A while the traction motor is idle.
+rest_current_max_a = 1.5
+rest_motor_power_max_w = 20.0
+baseline_samples = 2
+baseline_window_samples = 3
+resistance_min_current_a = 2.0
+
+[logging]
+# Logging remains opt-in via --all-logs and/or --battery-log. These values only
+# provide automatic directories, prefixes and a shared run timestamp.
+timestamp = true
+timestamp_format = "%Y%m%d-%H%M%S"
+all_logs_directory = "inq"
+all_logs_prefix = "inq"
+battery_log_directory = "bat-log"
+battery_log_prefix = "battery"
+
