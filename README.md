@@ -2,6 +2,10 @@
 
 A dependency-free Ninebot UART decoder, stable terminal dashboard, battery-health logger, and conservative read-only active poller.
 
+![miliVoltron Inquisitor dashboard while charging](assets/dashboard.png)
+
+*Inquisitor dashboard: ECU + BMS live view, battery health, and recent events.*
+
 ## Install
 
 From a source checkout:
