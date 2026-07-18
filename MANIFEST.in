@@ -1,0 +1,10 @@
+include README.md
+include pyproject.toml
+include mili-voltron.toml
+include mili-voltron.sh
+recursive-include tests *
+prune tests/__pycache__
+global-exclude iot-boot*
+global-exclude make_figures.py
+global-exclude requirements-figures.txt
+global-exclude *.pyc

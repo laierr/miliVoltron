@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mili-voltron"
+version = "0.1.0"
+description = "Lightweight Ninebot UART collector, decoder, and battery diagnostics tool"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "LicenseRef-Proprietary"
+authors = [{ name = "laierr" }]
+keywords = ["ninebot", "uart", "bms", "telemetry", "scooter"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: System :: Hardware",
+]
+dependencies = []
+
+[project.scripts]
+mili-voltron = "mili_voltron:main"
+
+[tool.setuptools]
+py-modules = [
+  "mili_voltron",
+  "mili_voltron_battery",
+  "mili_voltron_config",
+  "mili_voltron_defs",
+  "mili_voltron_polling",
+]
+include-package-data = true
+
+[tool.setuptools.package-data]
+"*" = ["mili-voltron.toml"]

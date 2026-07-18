@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import tempfile
 import unittest
 from pathlib import Path
@@ -73,6 +74,39 @@ class PacketTests(unittest.TestCase):
         self.assertIsNone(decoded["bms_soc_reported_percent"])
         self.assertEqual(decoded["temperatures_12_c"], [19, 19])
         self.assertEqual(len(decoded["cells_mv"]), 10)
+
+    def test_heartbeat_decodes_ecu_temperature_map(self) -> None:
+        payload = bytes(
+            [
+                0x00, 0x00,  # motor power
+                0x2A, 0x00,  # pack voltage
+                80,  # SoC
+                4,  # unlocked
+                0x01,  # flags
+                0,  # error
+                0,  # alarm
+                0,  # speed
+                0x00, 0x00,  # wheel counter
+                # MOSFET plate, motor, unknown, BMS T2 echo, BMS T1 echo
+                32, 31, 0, 38, 37,
+                0x00, 0x00, 0x00, 0x00,  # ride time
+                0x00, 0x00, 0x00, 0x00,  # odometer
+            ]
+        )
+        packet = Packet(
+            timestamp_ns=0,
+            raw=build_packet(0x20, 0x3D, 0x55, 0x00, payload),
+        )
+
+        decoded = decode_packet(packet)
+
+        self.assertEqual(decoded["kind"], "heartbeat")
+        self.assertEqual(decoded["ecu_temperatures_raw_c"], [32, 31, 0, 38, 37])
+        self.assertEqual(decoded["mosfet_radiator_temperature_reported_c"], 32)
+        self.assertEqual(decoded["motor_temperature_reported_c"], 31)
+        self.assertIsNone(decoded["ecu_temperature_unknown_reported_c"])
+        self.assertEqual(decoded["ecu_bms_t2_temperature_reported_c"], 38)
+        self.assertEqual(decoded["ecu_bms_t1_temperature_reported_c"], 37)
 
     def test_temperature_reply_preserves_sensor_order_and_missing_values(self) -> None:
         packet = Packet(
@@ -173,7 +207,89 @@ class BatteryAnalyzerTests(unittest.TestCase):
             BATTERY_LOG_FIELDS,
         )
         self.assertIn("bms_register_3b_reported_raw", BATTERY_LOG_FIELDS)
+        self.assertIn("ecu_motor_temperature_latest_reported_c", BATTERY_LOG_FIELDS)
+        self.assertIn("ecu_motor_temperature_peak_derived_c", BATTERY_LOG_FIELDS)
+        self.assertIn(
+            "ecu_mosfet_radiator_temperature_latest_reported_c",
+            BATTERY_LOG_FIELDS,
+        )
+        self.assertIn(
+            "ecu_mosfet_radiator_temperature_peak_derived_c",
+            BATTERY_LOG_FIELDS,
+        )
         self.assertNotIn("health_percent", BATTERY_LOG_FIELDS)
+
+    def test_heartbeat_temperatures_aggregate_into_battery_csv(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        csv_path = Path(directory.name) / "battery.csv"
+        analyzer = BatteryAnalyzer(csv_path)
+        self.addCleanup(analyzer.close)
+
+        analyzer.update(
+            {
+                "kind": "heartbeat",
+                "motor_power_w": 100,
+                "motor_temperature_reported_c": 31,
+                "mosfet_radiator_temperature_reported_c": 34,
+            },
+            0.5,
+            "ECU",
+        )
+        analyzer.update(
+            {
+                "kind": "heartbeat",
+                "motor_power_w": 120,
+                "motor_temperature_reported_c": 33,
+                "mosfet_radiator_temperature_reported_c": 36,
+            },
+            0.6,
+            "ECU",
+        )
+        analyzer.update(
+            {
+                "kind": "bms_telemetry",
+                "voltage_v": 39.85,
+                "current_a": 0.0,
+                "temperatures_12_c": [19, 19],
+                "cells_mv": [3973, 3981, 3980, 3983, 3980, 3991, 3994, 3992, 3994, 3993],
+                "bms_soc_reported_raw": 0xFFFF,
+                "bms_soc_reported_percent": None,
+                "coulomb_capacity_reported_mah": 23932,
+                "voltage_capacity_reported_mah": 23375,
+                "register_3b_raw": 98,
+            },
+            1.0,
+            "BMS",
+        )
+        analyzer.update(
+            {
+                "kind": "pcb_temperature_block",
+                "temperatures_34_56_c": [19, 19, 19, 20],
+            },
+            1.01,
+            "BMS",
+        )
+
+        sample = analyzer.latest_sample
+        self.assertIsNotNone(sample)
+        assert sample is not None
+        self.assertEqual(sample.motor_temperature_latest_c, 33)
+        self.assertEqual(sample.motor_temperature_peak_c, 33)
+        self.assertEqual(sample.mosfet_radiator_temperature_latest_c, 36)
+        self.assertEqual(sample.mosfet_radiator_temperature_peak_c, 36)
+
+        with csv_path.open(encoding="utf-8", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["ecu_motor_temperature_latest_reported_c"], "33")
+        self.assertEqual(rows[0]["ecu_motor_temperature_peak_derived_c"], "33")
+        self.assertEqual(
+            rows[0]["ecu_mosfet_radiator_temperature_latest_reported_c"], "36"
+        )
+        self.assertEqual(
+            rows[0]["ecu_mosfet_radiator_temperature_peak_derived_c"], "36"
+        )
 
     def test_soc_estimates_use_design_capacity_and_report_percentage_point_delta(self) -> None:
         directory = tempfile.TemporaryDirectory()

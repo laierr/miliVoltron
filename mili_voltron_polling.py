@@ -71,7 +71,7 @@ class InquisitorPoller:
     def __init__(
         self,
         *,
-        poll_interval_s: float = 3.0,
+        poll_interval_s: float = 1.0,
         response_timeout_s: float = 0.35,
         inter_request_gap_s: float = 0.01,
         retries: int = 1,

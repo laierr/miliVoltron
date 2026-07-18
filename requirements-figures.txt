@@ -1,17 +1,10 @@
-# Optional deps for the standalone make_figures.py tool.
-# Not required by the miliVoltron collector itself.
+# Optional deps for the local make_figures.py helper.
+# Not part of the mili-voltron installable package.
 #
-# Setup:
 #   python3 -m venv .venv
 #   source .venv/bin/activate
 #   pip install -r requirements-figures.txt
-#
-# Or with uv:
-#   uv venv .venv
-#   uv pip install -r requirements-figures.txt
-#
-# Run:
-#   .venv/bin/python make_figures.py bat-log/SESSION.csv -o figures/
+#   python make_figures.py bat-log/SESSION.csv -o figures/
 
 pandas
 numpy

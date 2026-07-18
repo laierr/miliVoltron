@@ -37,6 +37,10 @@ BATTERY_LOG_FIELDS = [
     "ecu_motor_power_latest_reported_w",
     "ecu_motor_power_average_derived_w",
     "ecu_motor_power_peak_derived_w",
+    "ecu_motor_temperature_latest_reported_c",
+    "ecu_motor_temperature_peak_derived_c",
+    "ecu_mosfet_radiator_temperature_latest_reported_c",
+    "ecu_mosfet_radiator_temperature_peak_derived_c",
     "ecu_soc_reported_percent",
     "bms_soc_reported_percent",
     "bms_soc_reported_raw",
@@ -81,6 +85,10 @@ class CompleteBatterySample:
     motor_power_average_w: float | None
     motor_power_peak_w: float | None
     motor_power_abs_peak_w: float | None
+    motor_temperature_latest_c: int | None
+    motor_temperature_peak_c: int | None
+    mosfet_radiator_temperature_latest_c: int | None
+    mosfet_radiator_temperature_peak_c: int | None
     ecu_soc_reported_percent: int | None
     bms_soc_reported_percent: int | None
     bms_soc_reported_raw: int | None
@@ -97,8 +105,9 @@ class BatteryAnalyzer:
     """Collect coherent BMS cycles, calculate sag, and optionally write CSV.
 
     A complete sample is emitted after STATUS, CELL_VOLTAGES and the BMS
-    temperature block have all arrived for the same cycle. Fast ECU motor-power
-    heartbeats are aggregated between complete BMS samples.
+    temperature block have all arrived for the same cycle. Fast ECU heartbeats
+    contribute motor-power and MOSFET/motor-temperature aggregates between
+    complete BMS samples.
     """
 
     def __init__(
@@ -147,6 +156,10 @@ class BatteryAnalyzer:
 
         self._motor_values: list[float] = []
         self._motor_latest: float | None = None
+        self._motor_temperatures: list[int] = []
+        self._motor_temperature_latest: int | None = None
+        self._mosfet_temperatures: list[int] = []
+        self._mosfet_temperature_latest: int | None = None
 
         self._rest_samples: deque[CompleteBatterySample] = deque(
             maxlen=self.baseline_window_samples
@@ -168,6 +181,8 @@ class BatteryAnalyzer:
             "discharge_power_w": 0.0,
             "charge_power_w": 0.0,
             "motor_power_w": 0.0,
+            "motor_temperature_c": None,
+            "mosfet_radiator_temperature_c": None,
             "pack_sag_v": 0.0,
             "charge_rise_v": 0.0,
             "discharge_resistance_mohm": 0.0,
@@ -206,6 +221,10 @@ class BatteryAnalyzer:
         self.latest_sample = None
         self.latest_analytics = {}
         self._motor_values.clear()
+        self._motor_temperatures.clear()
+        self._mosfet_temperatures.clear()
+        self._motor_temperature_latest = None
+        self._mosfet_temperature_latest = None
 
     def _derive_mode(self, current_a: float, motor_abs_peak_w: float | None) -> str:
         # Charging is authoritative either from signed BMS current or ECU state 20.
@@ -236,6 +255,22 @@ class BatteryAnalyzer:
                 self._motor_latest = value
                 self._motor_values.append(value)
                 self.peaks["motor_power_w"] = max(float(self.peaks["motor_power_w"] or 0.0), value)
+            motor_temp = decoded.get("motor_temperature_reported_c")
+            if isinstance(motor_temp, int):
+                self._motor_temperature_latest = motor_temp
+                self._motor_temperatures.append(motor_temp)
+                prior = self.peaks["motor_temperature_c"]
+                self.peaks["motor_temperature_c"] = (
+                    float(motor_temp) if prior is None else max(float(prior), float(motor_temp))
+                )
+            mosfet_temp = decoded.get("mosfet_radiator_temperature_reported_c")
+            if isinstance(mosfet_temp, int):
+                self._mosfet_temperature_latest = mosfet_temp
+                self._mosfet_temperatures.append(mosfet_temp)
+                prior = self.peaks["mosfet_radiator_temperature_c"]
+                self.peaks["mosfet_radiator_temperature_c"] = (
+                    float(mosfet_temp) if prior is None else max(float(prior), float(mosfet_temp))
+                )
             return
 
         if kind == "serial" and source_name in {"BMS", "BMS2"}:
@@ -345,6 +380,16 @@ class BatteryAnalyzer:
             if self._motor_values
             else abs(self._motor_latest) if self._motor_latest is not None else None
         )
+        motor_temperature_peak = (
+            max(self._motor_temperatures)
+            if self._motor_temperatures
+            else self._motor_temperature_latest
+        )
+        mosfet_temperature_peak = (
+            max(self._mosfet_temperatures)
+            if self._mosfet_temperatures
+            else self._mosfet_temperature_latest
+        )
         current_a = float(self._pending_status["current_a"])
 
         def pending_int(key: str) -> int | None:
@@ -365,6 +410,10 @@ class BatteryAnalyzer:
             motor_power_average_w=motor_average,
             motor_power_peak_w=motor_peak,
             motor_power_abs_peak_w=motor_abs_peak,
+            motor_temperature_latest_c=self._motor_temperature_latest,
+            motor_temperature_peak_c=motor_temperature_peak,
+            mosfet_radiator_temperature_latest_c=self._mosfet_temperature_latest,
+            mosfet_radiator_temperature_peak_c=mosfet_temperature_peak,
             ecu_soc_reported_percent=self.ecu_soc_reported_percent,
             bms_soc_reported_percent=pending_int("bms_soc_reported_percent"),
             bms_soc_reported_raw=pending_int("bms_soc_reported_raw"),
@@ -383,6 +432,8 @@ class BatteryAnalyzer:
 
         self._emitted_generation = self._status_generation
         self._motor_values.clear()
+        self._motor_temperatures.clear()
+        self._mosfet_temperatures.clear()
         self.latest_sample = sample
         self.last_complete_monotonic = time.monotonic()
         self.latest_analytics = self._analyse_sample(sample)
@@ -598,6 +649,18 @@ class BatteryAnalyzer:
             ),
             "ecu_motor_power_peak_derived_w": self._round_or_blank(
                 sample.motor_power_peak_w, 2
+            ),
+            "ecu_motor_temperature_latest_reported_c": self._round_or_blank(
+                sample.motor_temperature_latest_c
+            ),
+            "ecu_motor_temperature_peak_derived_c": self._round_or_blank(
+                sample.motor_temperature_peak_c
+            ),
+            "ecu_mosfet_radiator_temperature_latest_reported_c": self._round_or_blank(
+                sample.mosfet_radiator_temperature_latest_c
+            ),
+            "ecu_mosfet_radiator_temperature_peak_derived_c": self._round_or_blank(
+                sample.mosfet_radiator_temperature_peak_c
             ),
             "ecu_soc_reported_percent": self._round_or_blank(
                 sample.ecu_soc_reported_percent

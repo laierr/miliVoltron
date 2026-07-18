@@ -49,7 +49,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         },
     },
     "inquisitor": {
-        "poll_interval_s": 3.0,
+        "poll_interval_s": 1.0,
         "response_timeout_s": 0.35,
         "inter_request_gap_s": 0.01,
         "retries": 1,

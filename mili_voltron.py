@@ -156,6 +156,12 @@ def decode_temperature_word(value: int) -> list[int | None]:
     return [None if raw == 0 else raw - 20 for raw in raw_values]
 
 
+def optional_celsius(raw: int) -> int | None:
+    """Treat raw 0 as an absent / unpopulated ECU temperature sensor."""
+
+    return None if raw == 0 else raw
+
+
 def decode_packet(packet: Packet) -> dict[str, object]:
     p = packet.payload
 
@@ -166,6 +172,7 @@ def decode_packet(packet: Packet) -> dict[str, object]:
         speed = p[9]
         state = p[5]
         error = p[7]
+        ecu_temps_raw = list(p[12:17])
         return {
             "kind": "heartbeat",
             "motor_power_w": i16(p, 0),
@@ -187,7 +194,15 @@ def decode_packet(packet: Packet) -> dict[str, object]:
             # intentionally displayed as state, not recorded as an event.
             "wheel_moving": speed > 0,
             "wheel_counter_raw": u16(p, 10),
-            "ecu_temperatures_raw_c": list(p[12:17]),
+            # Heartbeat-only temperatures (°C). Keep these separate from
+            # Inquisitor/BMS-polled T1–T6 even when offsets 15–16 echo BMS T2/T1.
+            # Raw 0 means absent on this hardware (often the unknown slot).
+            "ecu_temperatures_raw_c": ecu_temps_raw,
+            "mosfet_radiator_temperature_reported_c": optional_celsius(ecu_temps_raw[0]),
+            "motor_temperature_reported_c": optional_celsius(ecu_temps_raw[1]),
+            "ecu_temperature_unknown_reported_c": optional_celsius(ecu_temps_raw[2]),
+            "ecu_bms_t2_temperature_reported_c": optional_celsius(ecu_temps_raw[3]),
+            "ecu_bms_t1_temperature_reported_c": optional_celsius(ecu_temps_raw[4]),
             "ride_time_seconds": u32(p, 17),
             "odometer_metres": u32(p, 21),
         }
@@ -792,6 +807,11 @@ class TerminalDashboard:
             return f"{value:.{digits}f}{suffix}"
         return f"{value}{suffix}"
 
+    @staticmethod
+    def _temp_slot(label: str, value: object) -> str:
+        text = "—" if value is None else str(value)
+        return f"{label}:{text}"
+
     def _age(self, source: str, now: float) -> str:
         seen = self.model.source_seen.get(source)
         if seen is None:
@@ -885,9 +905,20 @@ class TerminalDashboard:
             f"ECU pack {self._value(h.get('ecu_pack_voltage_v'), ' V', 0)}   "
             f"ECU SoC {self._value(h.get('ecu_soc_reported_percent'), '%', 0)}"
         )
-        ecu_temps = h.get("ecu_temperatures_raw_c", [])
+        if has_heartbeat:
+            ecu_temp_text = "  ".join(
+                (
+                    self._temp_slot("MOSFET", h.get("mosfet_radiator_temperature_reported_c")),
+                    self._temp_slot("motor", h.get("motor_temperature_reported_c")),
+                    self._temp_slot("unk", h.get("ecu_temperature_unknown_reported_c")),
+                    self._temp_slot("BMS-T2", h.get("ecu_bms_t2_temperature_reported_c")),
+                    self._temp_slot("BMS-T1", h.get("ecu_bms_t1_temperature_reported_c")),
+                )
+            )
+        else:
+            ecu_temp_text = "—"
+        lines.append(f"ECU temps {ecu_temp_text} °C")
         lines.append(
-            f"ECU temps {ecu_temps or '—'}   "
             f"Wheel counter {h.get('wheel_counter_raw', '—')}   "
             f"Ride {self._value((h.get('ride_time_seconds') or 0) / 3600 if h.get('ride_time_seconds') is not None else None, ' h')}   "
             f"Odo {self._value((h.get('odometer_metres') or 0) / 1000 if h.get('odometer_metres') is not None else None, ' km', 3)}"
@@ -985,7 +1016,9 @@ class TerminalDashboard:
                 f"Peaks: discharge {self._value(peaks.get('discharge_current_a') if isinstance(peaks, dict) else None, ' A')} / "
                 f"{self._value(peaks.get('discharge_power_w') if isinstance(peaks, dict) else None, ' W', 0)}   "
                 f"charge {self._value(peaks.get('charge_current_a') if isinstance(peaks, dict) else None, ' A')}   "
-                f"motor {self._value(peaks.get('motor_power_w') if isinstance(peaks, dict) else None, ' W', 0)}   "
+                f"motor {self._value(peaks.get('motor_power_w') if isinstance(peaks, dict) else None, ' W', 0)} / "
+                f"{self._value(peaks.get('motor_temperature_c') if isinstance(peaks, dict) else None, ' °C', 0)}   "
+                f"MOSFET {self._value(peaks.get('mosfet_radiator_temperature_c') if isinstance(peaks, dict) else None, ' °C', 0)}   "
                 f"Δcell {self._value(peaks.get('cell_delta_mv') if isinstance(peaks, dict) else None, ' mV', 0)}"
             )
 

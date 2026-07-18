@@ -2,7 +2,45 @@
 
 A dependency-free Ninebot UART decoder, stable terminal dashboard, battery-health logger, and conservative read-only active poller.
 
-The runnable entry point is `mili-voltron.sh`.
+## Install
+
+From a source checkout:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install .
+```
+
+Optional figure tooling is not part of the package; keep it in the source
+checkout if needed.
+
+Build distributable archives:
+
+```bash
+pip install build
+python -m build
+```
+
+Artifacts land in `dist/` as a wheel and source tarball.
+
+## Run
+
+From a source tree, the launcher still works:
+
+```bash
+./mili-voltron.sh --dashboard
+```
+
+After install:
+
+```bash
+mili-voltron --dashboard
+# or
+python -m mili_voltron --dashboard
+```
+
+Installed runs use the built-in defaults. To override them, pass `--config path/to/mili-voltron.toml`.
 
 ## Modes
 
@@ -45,10 +83,10 @@ BMS 0x51,  6 bytes — PCB version and temperature sensors T3–T6
 
 The 64-byte request size is confirmed by the reference captures and is the
 maximum Inquisitor will request. Reading one broad window costs fewer request
-and response turnarounds than several narrow reads. The default cycle is 3
-seconds, matching the captured IoT behavior. Only one request is outstanding at
-a time; replies are matched by source and index, with bounded timeout/retry
-handling.
+and response turnarounds than several narrow reads. The default cycle is 1
+second (1 Hz); that has been stable on this IoT-replacement tap (the stock IoT
+cycle in captures is slower). Only one request is outstanding at a time;
+replies are matched by source and index, with bounded timeout/retry handling.
 
 The status bar always labels this mode `ACTIVE READ-ONLY`.
 
@@ -75,11 +113,11 @@ The top line shows:
 
 The live view includes:
 
-- ECU motor power, speed, wheel movement, flags, state and errors;
+- ECU motor power, heartbeat temperatures (MOSFET / motor / BMS-T1/T2), speed, wheel movement, flags, state and errors;
 - battery compartment and indicator states;
 - BMS signed current, voltage and calculated power;
 - all ten cell voltages and live delta;
-- up to six BMS temperatures, with unpopulated sensors shown as unavailable;
+- up to six polled BMS temperatures (T1–T6), kept separate from heartbeat BMS-T1/T2 copies;
 - BMS-reported, voltage-derived and coulomb-derived SOC plus their delta;
 - battery sag/charge-rise analytics and effective impedance estimate;
 - battery/motor session peaks;
@@ -144,13 +182,15 @@ Bit 2 remains semantically unknown. A discarded, very-low-confidence GPS-no-fix 
   --battery-log captures/battery-1729.csv
 ```
 
-One row is written per coherent BMS telemetry cycle. Fast ECU motor-power values are aggregated between BMS samples.
+One row is written per coherent BMS telemetry cycle. Fast ECU motor-power and
+MOSFET/motor-temperature values are aggregated between BMS samples.
 
 The focused CSV records:
 
 - battery serial and mode;
 - BMS voltage, signed current and calculated power;
 - ECU motor power latest/average/peak;
+- ECU motor and MOSFET radiator temperatures latest/peak;
 - ECU- and BMS-reported SOC;
 - BMS coulomb- and voltage-derived capacities;
 - SOC estimates derived from design capacity and their percentage-point delta;
@@ -243,7 +283,11 @@ Offsets are relative to the 25-byte ECU heartbeat payload.
 | 8 | `u8` | unknown secondary status/alarm byte |
 | 9 | `u8` | speed in km/h; also rendered as live `wheel_moving` Boolean |
 | 10–11 | `u16le` | high-resolution wheel/movement counter, unit unknown |
-| 12–16 | bytes | temperature-like values, identities unknown |
+| 12 | `u8` | MOSFET radiator plate temperature (°C); `0` = absent |
+| 13 | `u8` | motor temperature (°C); `0` = absent |
+| 14 | `u8` | unknown temperature slot; `0` on this model (no sensor) |
+| 15 | `u8` | heartbeat echo of BMS T2 (°C); keep separate from polled BMS temps |
+| 16 | `u8` | heartbeat echo of BMS T1 (°C); keep separate from polled BMS temps |
 | 17–20 | `u32le` | cumulative ride time in seconds |
 | 21–24 | `u32le` | odometer in metres |
 
@@ -266,7 +310,43 @@ Passive mode:
 
 Inquisitor mode additionally connects adapter TX to the former IoT TX line. Use confirmed 3.3 V logic and common ground. A small series resistor in the initial TX setup is sensible. Inquisitor transmits read requests only.
 
-On WSL, expose the USB adapter with `usbipd`; it then appears as an ordinary `/dev/ttyUSB*` device.
+### WSL: forward a USB serial adapter with usbipd
+
+WSL 2 does not see host USB devices by default. Use
+[usbipd-win](https://github.com/dorssel/usbipd-win) on Windows to attach the
+adapter; inside WSL it then appears as an ordinary `/dev/ttyUSB*` (or
+`/dev/ttyACM*`) device.
+
+Install with winget (recommended). Prefer `--interactive` so Windows does not
+restart without prompting if a driver install requires it:
+
+```powershell
+winget install --interactive --exact dorssel.usbipd-win
+```
+
+Keep a WSL terminal open so the WSL 2 VM stays running, then in PowerShell:
+
+```powershell
+usbipd list
+usbipd bind --busid <BUSID>          # elevated / admin once to share the device
+usbipd attach --wsl --busid <BUSID>  # attach to WSL (no admin needed)
+```
+
+Verify inside WSL:
+
+```bash
+lsusb
+ls -l /dev/ttyUSB* /dev/ttyACM* /dev/serial/by-id/
+```
+
+Detach when finished (or when unplugging / restarting WSL):
+
+```powershell
+usbipd detach --busid <BUSID>
+```
+
+While attached to WSL, Windows cannot use the same adapter. If attach fails with
+a USBIP/kernel error, update WSL first: `wsl --update`.
 
 ### Dashboard readability
 
@@ -327,11 +407,11 @@ until fixtures are present.
 
 GitHub Actions runs the suite on Python 3.11, 3.12, and 3.13.
 
-## Figures (optional)
+## Figures (optional, source checkout only)
 
-`make_figures.py` is a standalone post-processing tool for battery CSV logs.
-It needs pandas, numpy, and matplotlib; keep those in a local virtualenv so
-the collector itself stays dependency-free:
+`make_figures.py` is a local post-processing helper for battery CSV logs. It is
+not included in the installable package. It needs pandas, numpy, and matplotlib
+in a separate virtualenv:
 
 ```bash
 python3 -m venv .venv

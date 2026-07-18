@@ -57,4 +57,8 @@ if [[ "$has_live_source" == false && "$has_replay_source" == false ]]; then
     set -- --port "$selected" "$@"
 fi
 
-exec python3 "$SCRIPT_DIR/mili_voltron.py" "$@"
+# Prefer the source tree checkout; fall back to an installed package.
+if [[ -f "$SCRIPT_DIR/mili_voltron.py" ]]; then
+    exec python3 "$SCRIPT_DIR/mili_voltron.py" "$@"
+fi
+exec python3 -m mili_voltron "$@"
