@@ -143,10 +143,17 @@ def decode_ascii(payload: bytes) -> str:
 def decode_bms_firmware_word(value: int) -> str:
     """Render the observed packed firmware word, e.g. 0x0652 -> 6.5.2."""
 
-    digits = f"{value:04X}".lstrip("0")
-    if digits and all(character.isdigit() for character in digits):
-        return ".".join(digits)
-    return f"0x{value:04X}"
+    major = value >> 8
+    minor = (value >> 4) & 0x0F
+    patch = value & 0x0F
+    return f"{major}.{minor}.{patch}"
+
+
+def decode_temperature_word(value: int) -> list[int | None]:
+    """Decode one packed pair in canonical high-byte, low-byte sensor order."""
+
+    raw_values = ((value >> 8) & 0xFF, value & 0xFF)
+    return [None if raw == 0 else raw - 20 for raw in raw_values]
 
 
 def decode_packet(packet: Packet) -> dict[str, object]:
@@ -163,7 +170,7 @@ def decode_packet(packet: Packet) -> dict[str, object]:
             "kind": "heartbeat",
             "motor_power_w": i16(p, 0),
             "ecu_pack_voltage_v": u16(p, 2),
-            "battery_soc_percent": p[4],
+            "ecu_soc_reported_percent": p[4],
             "vehicle_state_raw": state,
             "vehicle_state": VEHICLE_STATES.get(state, f"STATE_{state}"),
             "ecu_flags": flags,
@@ -191,8 +198,10 @@ def decode_packet(packet: Packet) -> dict[str, object]:
             voltage_raw = u16(p, 8)
             current_a = current_raw * BMS_CURRENT_SCALE_A
             voltage_v = voltage_raw * BMS_VOLTAGE_SCALE_V
-            return {
-                "kind": "bms_status",
+            result: dict[str, object] = {
+                "kind": "bms_telemetry" if len(p) >= 52 else "bms_status",
+                "bool_flags_raw": u16(p, 0),
+                "remaining_capacity_reported_mah": u16(p, 2),
                 "status_prefix_hex": p[:6].hex(),
                 "current_raw": current_raw,
                 "current_a": round(current_a, 3),
@@ -201,6 +210,31 @@ def decode_packet(packet: Packet) -> dict[str, object]:
                 "power_w": round(voltage_v * current_a, 2),
                 "tail_hex": p[10:].hex(),
             }
+            if len(p) >= 12:
+                result["temperatures_12_c"] = decode_temperature_word(u16(p, 10))
+            if len(p) >= 24:
+                result.update({
+                    "coulomb_capacity_reported_mah": u16(p, 18),
+                    "voltage_capacity_reported_mah": u16(p, 20),
+                    "register_3b_raw": u16(p, 22),
+                })
+            if len(p) >= 30:
+                soc_raw = u16(p, 28)
+                result.update({
+                    "bms_soc_reported_raw": soc_raw,
+                    "bms_soc_reported_percent": None if soc_raw == 0xFFFF else soc_raw,
+                    "bms_soc_reported_valid": soc_raw != 0xFFFF,
+                })
+            if len(p) >= 52:
+                cells = [u16(p, offset) for offset in range(32, 52, 2)]
+                result.update({
+                    "cells_mv": cells,
+                    "pack_v": round(sum(cells) / 1000, 3),
+                    "delta_mv": max(cells) - min(cells),
+                    "min_cell": cells.index(min(cells)) + 1,
+                    "max_cell": cells.index(max(cells)) + 1,
+                })
+            return result
         return {"kind": "bms_status", "payload_hex": p.hex()}
 
     if packet.cmd == 0x04 and packet.index == 0x10:
@@ -218,9 +252,28 @@ def decode_packet(packet: Packet) -> dict[str, object]:
                 "firmware_hex": f"0x{firmware_raw:04X}",
                 "firmware_version": decode_bms_firmware_word(firmware_raw),
             })
+        if packet.src in (0x22, 0x23) and len(p) >= 20:
+            result.update({
+                "design_full_capacity_reported_mah": u16(p, 16),
+                "current_full_capacity_reported_mah": u16(p, 18),
+            })
+        if packet.src in (0x22, 0x23) and len(p) >= 24:
+            result.update({
+                "register_1a_raw": u16(p, 20),
+                "register_1b_raw": u16(p, 22),
+            })
         return result
 
-    if packet.cmd == 0x04 and packet.index in (0x17, 0x1A) and len(p) >= 2:
+    if packet.cmd == 0x04 and packet.index == 0x17 and packet.src in (0x22, 0x23) and len(p) >= 2:
+        raw = u16(p)
+        return {
+            "kind": "firmware",
+            "raw_u16": raw,
+            "bytes": p[:2].hex(),
+            "version": decode_bms_firmware_word(raw),
+        }
+
+    if packet.cmd == 0x04 and packet.index == 0x1A and packet.src == 0x20 and len(p) >= 2:
         return {"kind": "firmware", "raw_u16": u16(p), "bytes": p[:2].hex()}
 
     if packet.cmd == 0x04 and packet.src in (0x22, 0x23) and packet.index == 0x40:
@@ -236,13 +289,16 @@ def decode_packet(packet: Packet) -> dict[str, object]:
         return result
 
     if packet.cmd == 0x04 and packet.src in (0x22, 0x23) and packet.index == 0x3B and len(p) >= 2:
-        return {"kind": "capacity_health", "percent": u16(p)}
+        return {"kind": "register_3b", "raw": u16(p)}
 
-    if packet.cmd == 0x04 and packet.src in (0x22, 0x23) and packet.index == 0x51 and len(p) >= 2:
+    if packet.cmd == 0x04 and packet.src in (0x22, 0x23) and packet.index == 0x51 and len(p) >= 6:
         return {
             "kind": "pcb_temperature_block",
             "pcb_version": u16(p),
-            "temperatures_c": [value - 20 for value in p[2:]],
+            "temperatures_34_56_c": (
+                decode_temperature_word(u16(p, 2))
+                + decode_temperature_word(u16(p, 4))
+            ),
         }
 
     if packet.cmd == 0x04 and packet.src == 0x20 and packet.index == 0x34 and len(p) >= 4:
@@ -626,8 +682,10 @@ class DashboardModel:
             )
             self.heartbeat = dict(decoded)
 
-        elif kind == "bms_status":
+        elif kind in {"bms_status", "bms_telemetry"}:
             self.bms_status = dict(decoded)
+            if kind == "bms_telemetry" and isinstance(decoded.get("cells_mv"), list):
+                self.cells = dict(decoded)
         elif kind == "cell_voltages":
             self.cells = dict(decoded)
         elif kind == "pcb_temperature_block":
@@ -751,11 +809,19 @@ class TerminalDashboard:
         h = m.heartbeat
         b = m.bms_status
         cells = m.cells.get("cells_mv", [])
-        temps = m.bms_temperatures.get("temperatures_c", [])
         battery = self.analyzer.snapshot()
         sample = battery.get("sample")
         analytics = battery.get("analytics", {})
         peaks = battery.get("peaks", {})
+        temps = getattr(sample, "temperatures_c", []) if sample is not None else []
+        temps_text = (
+            "  ".join(
+                f"T{index}:{'—' if value is None else value}"
+                for index, value in enumerate(temps, 1)
+            )
+            if temps
+            else "—"
+        )
 
         active_logs = ",".join(self.logs) if self.logs else "off"
         if self.mode == "inquisitor":
@@ -817,7 +883,7 @@ class TerminalDashboard:
             f"Motor {paint(self._value(h.get('motor_power_w'), ' W', 0), Ansi.CYAN, self.colour)}   "
             f"Speed {paint(self._value(h.get('speed_kmh'), ' km/h', 0), Ansi.CYAN, self.colour)}   "
             f"ECU pack {self._value(h.get('ecu_pack_voltage_v'), ' V', 0)}   "
-            f"SoC {self._value(h.get('battery_soc_percent'), '%', 0)}"
+            f"ECU SoC {self._value(h.get('ecu_soc_reported_percent'), '%', 0)}"
         )
         ecu_temps = h.get("ecu_temperatures_raw_c", [])
         lines.append(
@@ -853,7 +919,7 @@ class TerminalDashboard:
                     f"Min #{m.cells.get('min_cell', '—')}   "
                     f"Max #{m.cells.get('max_cell', '—')}   "
                     f"Delta {m.cells.get('delta_mv', '—')} mV   "
-                    f"BMS temps {temps or '—'} °C"
+                    f"BMS temps {temps_text} °C"
                 )
             else:
                 lines.append(paint("Cell voltages pending…", Ansi.DIM, self.colour))
@@ -880,6 +946,32 @@ class TerminalDashboard:
                 f"Sag {self._value(sag, ' V', 3)}   "
                 f"Charge rise {self._value(rise, ' V', 3)}   "
                 f"Z estimate {self._value(resistance, ' mΩ', 1)}"
+            )
+            bms_soc_raw = getattr(sample, "bms_soc_reported_raw", None)
+            bms_soc = getattr(sample, "bms_soc_reported_percent", None)
+            bms_soc_text = "INVALID (0xFFFF)" if bms_soc_raw == 0xFFFF else self._value(
+                bms_soc, "%", 1
+            )
+            coulomb_soc = (
+                analytics.get("coulomb_soc_derived_percent")
+                if isinstance(analytics, dict)
+                else None
+            )
+            voltage_soc = (
+                analytics.get("voltage_soc_derived_percent")
+                if isinstance(analytics, dict)
+                else None
+            )
+            soc_delta = (
+                analytics.get("soc_estimate_delta_derived_percentage_points")
+                if isinstance(analytics, dict)
+                else None
+            )
+            lines.append(
+                f"SOC BMS reported {bms_soc_text}   "
+                f"voltage-derived {self._value(voltage_soc, '%', 1)}   "
+                f"coulomb-derived {self._value(coulomb_soc, '%', 1)}   "
+                f"Δ(V−C) {self._value(soc_delta, ' pp', 1)}"
             )
             worst_index = analytics.get("worst_cell_sag_index") if isinstance(analytics, dict) else None
             rise_index = analytics.get("highest_cell_rise_index") if isinstance(analytics, dict) else None
@@ -1172,7 +1264,15 @@ def main() -> int:
             analyzer.update(decoded, relative, device_name(packet.src))
             model.update(decoded, relative, device_name(packet.src), analyzer)
             if poller is not None:
-                poller.observe(src=packet.src, dst=packet.dst, cmd=packet.cmd, index=packet.index, now=now)
+                poller.observe(
+                    src=packet.src,
+                    dst=packet.dst,
+                    cmd=packet.cmd,
+                    index=packet.index,
+                    payload_length=packet.length,
+                    checksum_ok=packet.checksum_ok,
+                    now=now,
+                )
         logs.write(
             packet=packet, relative=relative, delta_ms=delta_ms, label=label,
             packet_no=packet_no, decoded=decoded,

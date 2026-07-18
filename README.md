@@ -35,15 +35,20 @@ Active **read-only** master mode for a test rig without the IoT module:
   --battery-log captures/battery-test.csv
 ```
 
-Inquisitor sends only confirmed `RD` requests using source address `0x3D`. It starts with battery serial and health, then polls the OEM battery telemetry group:
+Inquisitor sends only confirmed `RD` requests using source address `0x3D`. It
+starts with a broad identity read, then polls two battery telemetry windows:
 
 ```text
-BMS 0x30, 12 bytes — status/current/voltage
-BMS 0x40, 20 bytes — ten cell voltages
-BMS 0x51,  6 bytes — PCB/temperature block
+BMS 0x30, 64 bytes — status, capacities, SOC, cells and surrounding raw registers
+BMS 0x51,  6 bytes — PCB version and temperature sensors T3–T6
 ```
 
-The default cycle is 3 seconds, matching the captured IoT behavior. Only one request is outstanding at a time; replies are matched by source and index, with bounded timeout/retry handling.
+The 64-byte request size is confirmed by the reference captures and is the
+maximum Inquisitor will request. Reading one broad window costs fewer request
+and response turnarounds than several narrow reads. The default cycle is 3
+seconds, matching the captured IoT behavior. Only one request is outstanding at
+a time; replies are matched by source and index, with bounded timeout/retry
+handling.
 
 The status bar always labels this mode `ACTIVE READ-ONLY`.
 
@@ -74,7 +79,8 @@ The live view includes:
 - battery compartment and indicator states;
 - BMS signed current, voltage and calculated power;
 - all ten cell voltages and live delta;
-- BMS temperatures;
+- up to six BMS temperatures, with unpopulated sensors shown as unavailable;
+- BMS-reported, voltage-derived and coulomb-derived SOC plus their delta;
 - battery sag/charge-rise analytics and effective impedance estimate;
 - battery/motor session peaks;
 - discovered serial numbers and firmware.
@@ -145,15 +151,20 @@ The focused CSV records:
 - battery serial and mode;
 - BMS voltage, signed current and calculated power;
 - ECU motor power latest/average/peak;
-- SoC and health when available;
+- ECU- and BMS-reported SOC;
+- BMS coulomb- and voltage-derived capacities;
+- SOC estimates derived from design capacity and their percentage-point delta;
+- raw register `0x3B` for evidence only (it is not treated as meaningful health);
 - all ten cells, min/max cell and delta;
-- all four BMS temperatures;
+- up to six BMS temperatures;
 - resting reference voltage;
 - discharge sag or charging rise;
 - effective pack-path impedance estimate;
 - worst cell sag or highest cell rise.
 
 It deliberately omits speed, odometer, lock state, errors and indicators.
+Column names distinguish direct scooter/BMS values with `reported` from
+miliVoltron calculations with `derived`.
 
 ### Current sign
 
@@ -167,7 +178,9 @@ ECU vehicle state `20` is confirmed as `CHARGING` by repeated charger plug/unplu
 
 ### Sag baseline
 
-A baseline is established after at least two complete samples within ±0.5 A and is frozen during load or charging:
+A baseline is established after at least two complete samples within the
+configured idle-current threshold (1.5 A by default) and is frozen during load
+or charging:
 
 ```text
 discharge sag = resting voltage - loaded voltage
@@ -288,14 +301,15 @@ automatically.
 
 ### BMS identity and reconnection
 
-Inquisitor requests BMS register `0x10` as a 16-byte block. Bytes 0–13 are the
-14-character battery serial; bytes 14–15 are the BMS firmware word. Both values
-are shown in the dashboard and recorded in the battery CSV.
+Inquisitor requests BMS register `0x10` as a 24-byte block through register
+`0x1B`. Bytes 0–13 are the 14-character battery serial, bytes 14–15 are the BMS
+firmware word, and the window also captures design/current full capacity plus
+the low-confidence raw `0x1A` and `0x1B` values.
 
 When BMS traffic becomes stale, Voltron invalidates the current battery
 identity and resting reference. After the first successful BMS reply on
-recovery, identity and health requests are inserted ahead of the remaining
-telemetry requests. This prevents a newly connected battery from being logged
+recovery, the identity request is inserted ahead of the remaining telemetry
+requests. This prevents a newly connected battery from being logged
 under the previous battery's serial or baseline.
 
 ## Tests
@@ -312,3 +326,18 @@ guidance are documented in that directory. Capture-based tests are skipped
 until fixtures are present.
 
 GitHub Actions runs the suite on Python 3.11, 3.12, and 3.13.
+
+## Figures (optional)
+
+`make_figures.py` is a standalone post-processing tool for battery CSV logs.
+It needs pandas, numpy, and matplotlib; keep those in a local virtualenv so
+the collector itself stays dependency-free:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements-figures.txt
+python make_figures.py bat-log/SESSION.csv -o figures/
+```
+
+`.venv/` is gitignored.

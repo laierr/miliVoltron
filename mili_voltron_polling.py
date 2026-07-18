@@ -9,6 +9,9 @@ from typing import Callable
 from mili_voltron_defs import SOF
 
 
+MAX_READ_BYTES = 64
+
+
 def build_packet(src: int, dst: int, cmd: int, index: int, payload: bytes = b"") -> bytes:
     """Build one framed packet using the confirmed additive-complement checksum."""
 
@@ -20,8 +23,8 @@ def build_packet(src: int, dst: int, cmd: int, index: int, payload: bytes = b"")
 
 
 def build_read_request(dst: int, index: int, requested_bytes: int) -> bytes:
-    if not 0 <= requested_bytes <= 255:
-        raise ValueError("requested byte count must fit in u8")
+    if not 1 <= requested_bytes <= MAX_READ_BYTES:
+        raise ValueError(f"requested byte count must be 1..{MAX_READ_BYTES}")
     return build_packet(0x3D, dst, 0x01, index, bytes((requested_bytes,)))
 
 
@@ -52,14 +55,16 @@ class InquisitorPoller:
     is requested again immediately after the first successful BMS reply.
     """
 
+    # A confirmed 64-byte read is cheaper than separate status, capacity, SOC,
+    # and cell requests. It covers registers 0x30..0x4F.
     PERIODIC_BMS = (
-        PollRequest(0x22, 0x30, 12, "BMS_STATUS"),
-        PollRequest(0x22, 0x40, 20, "BMS_CELLS"),
+        PollRequest(0x22, 0x30, 64, "BMS_TELEMETRY"),
         PollRequest(0x22, 0x51, 6, "BMS_TEMPERATURES"),
     )
     IDENTITY_BMS = (
-        PollRequest(0x22, 0x10, 16, "BMS_IDENTITY"),
-        PollRequest(0x22, 0x3B, 2, "BMS_HEALTH"),
+        # Registers 0x10..0x1B: serial, firmware, full-capacity values, and
+        # low-confidence raw identity/config fields.
+        PollRequest(0x22, 0x10, 24, "BMS_IDENTITY"),
     )
     STARTUP_BMS = IDENTITY_BMS
 
@@ -170,10 +175,20 @@ class InquisitorPoller:
             self.stats["sent"] += 1
             self.last_tx_name = request.name
 
-    def observe(self, *, src: int, dst: int, cmd: int, index: int, now: float) -> bool:
+    def observe(
+        self,
+        *,
+        src: int,
+        dst: int,
+        cmd: int,
+        index: int,
+        payload_length: int,
+        checksum_ok: bool,
+        now: float,
+    ) -> bool:
         """Match an incoming reply. Returns True when it completes the pending poll."""
 
-        if cmd != 0x04 or dst != 0x3D:
+        if not checksum_ok or cmd != 0x04 or dst != 0x3D:
             return False
         pending = self.pending
         if pending is None:
@@ -181,7 +196,7 @@ class InquisitorPoller:
             return False
 
         req = pending.request
-        if src != req.dst or index != req.index:
+        if src != req.dst or index != req.index or payload_length != req.length:
             self.stats["unexpected_replies"] += 1
             return False
 

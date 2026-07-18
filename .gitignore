@@ -7,6 +7,8 @@ venv/
 captures/
 inq/
 bat-log/
+figures/
+reference/
 *.log
 *.jsonl
 *.csv

@@ -28,34 +28,43 @@ from mili_voltron_defs import (
 BATTERY_LOG_FIELDS = [
     "timestamp_utc",
     "elapsed_s",
-    "bms_serial",
-    "bms_firmware",
-    "mode",
-    "bms_voltage_v",
-    "bms_current_a",
-    "bms_power_w",
-    "ecu_motor_power_latest_w",
-    "ecu_motor_power_average_w",
-    "ecu_motor_power_peak_w",
-    "battery_soc_percent",
-    "health_percent",
-    *[f"cell_{index}_mv" for index in range(1, 11)],
-    "cell_min_mv",
-    "cell_min_index",
-    "cell_max_mv",
-    "cell_max_index",
-    "cell_delta_mv",
-    *[f"temp_{index}_c" for index in range(1, 5)],
-    "temp_min_c",
-    "temp_max_c",
-    "reference_voltage_v",
-    "pack_sag_v",
-    "charge_rise_v",
-    "resistance_estimate_mohm",
-    "worst_cell_sag_mv",
-    "worst_cell_sag_index",
-    "highest_cell_rise_mv",
-    "highest_cell_rise_index",
+    "bms_serial_reported",
+    "bms_firmware_reported",
+    "mode_derived",
+    "bms_voltage_reported_v",
+    "bms_current_reported_a",
+    "bms_power_derived_w",
+    "ecu_motor_power_latest_reported_w",
+    "ecu_motor_power_average_derived_w",
+    "ecu_motor_power_peak_derived_w",
+    "ecu_soc_reported_percent",
+    "bms_soc_reported_percent",
+    "bms_soc_reported_raw",
+    "bms_design_full_capacity_reported_mah",
+    "bms_current_full_capacity_reported_mah",
+    "bms_coulomb_capacity_reported_mah",
+    "bms_voltage_capacity_reported_mah",
+    "bms_coulomb_soc_derived_percent",
+    "bms_voltage_soc_derived_percent",
+    "bms_soc_estimate_delta_derived_percentage_points",
+    "bms_register_3b_reported_raw",
+    *[f"cell_{index}_reported_mv" for index in range(1, 11)],
+    "cell_min_derived_mv",
+    "cell_min_derived_index",
+    "cell_max_derived_mv",
+    "cell_max_derived_index",
+    "cell_delta_derived_mv",
+    *[f"temp_{index}_reported_c" for index in range(1, 7)],
+    "temp_min_derived_c",
+    "temp_max_derived_c",
+    "reference_voltage_derived_v",
+    "pack_sag_derived_v",
+    "charge_rise_derived_v",
+    "resistance_estimate_derived_mohm",
+    "worst_cell_sag_derived_mv",
+    "worst_cell_sag_derived_index",
+    "highest_cell_rise_derived_mv",
+    "highest_cell_rise_derived_index",
 ]
 
 
@@ -67,13 +76,19 @@ class CompleteBatterySample:
     power_w: float
     mode: str
     cells_mv: list[int]
-    temperatures_c: list[int]
+    temperatures_c: list[int | None]
     motor_power_latest_w: float | None
     motor_power_average_w: float | None
     motor_power_peak_w: float | None
     motor_power_abs_peak_w: float | None
-    soc_percent: int | None
-    health_percent: int | None
+    ecu_soc_reported_percent: int | None
+    bms_soc_reported_percent: int | None
+    bms_soc_reported_raw: int | None
+    design_full_capacity_reported_mah: int | None
+    current_full_capacity_reported_mah: int | None
+    coulomb_capacity_reported_mah: int | None
+    voltage_capacity_reported_mah: int | None
+    register_3b_reported_raw: int | None
     bms_serial: str | None
     bms_firmware: str | None
 
@@ -116,16 +131,18 @@ class BatteryAnalyzer:
             self._csv_handle.flush()
 
         self.vehicle_state_raw: int | None = None
-        self.soc_percent: int | None = None
-        self.health_percent: int | None = None
+        self.ecu_soc_reported_percent: int | None = None
+        self.design_full_capacity_reported_mah: int | None = None
+        self.current_full_capacity_reported_mah: int | None = None
         self.bms_serial: str | None = None
         self.bms_firmware: str | None = None
 
         self._status_generation = 0
         self._emitted_generation = 0
-        self._pending_status: dict[str, float] | None = None
+        self._pending_status: dict[str, object] | None = None
         self._pending_cells: list[int] | None = None
-        self._pending_temperatures: list[int] | None = None
+        self._pending_temperatures_12: list[int | None] | None = None
+        self._pending_temperatures_34_56: list[int | None] | None = None
         self._pending_elapsed_s: float | None = None
 
         self._motor_values: list[float] = []
@@ -172,11 +189,13 @@ class BatteryAnalyzer:
 
         self.bms_serial = None
         self.bms_firmware = None
-        self.health_percent = None
+        self.design_full_capacity_reported_mah = None
+        self.current_full_capacity_reported_mah = None
 
         self._pending_status = None
         self._pending_cells = None
-        self._pending_temperatures = None
+        self._pending_temperatures_12 = None
+        self._pending_temperatures_34_56 = None
         self._pending_elapsed_s = None
         self._emitted_generation = self._status_generation
 
@@ -208,9 +227,9 @@ class BatteryAnalyzer:
             state = decoded.get("vehicle_state_raw")
             if isinstance(state, int):
                 self.vehicle_state_raw = state
-            soc = decoded.get("battery_soc_percent")
+            soc = decoded.get("ecu_soc_reported_percent")
             if isinstance(soc, int):
-                self.soc_percent = soc
+                self.ecu_soc_reported_percent = soc
             motor_power = decoded.get("motor_power_w")
             if isinstance(motor_power, (int, float)):
                 value = float(motor_power)
@@ -230,6 +249,12 @@ class BatteryAnalyzer:
                 raw_firmware = decoded.get("firmware_raw_u16")
                 if isinstance(raw_firmware, int):
                     self.bms_firmware = f"0x{raw_firmware:04X}"
+            design_capacity = decoded.get("design_full_capacity_reported_mah")
+            if isinstance(design_capacity, int):
+                self.design_full_capacity_reported_mah = design_capacity
+            current_capacity = decoded.get("current_full_capacity_reported_mah")
+            if isinstance(current_capacity, int):
+                self.current_full_capacity_reported_mah = current_capacity
             return
 
         if kind == "firmware" and source_name in {"BMS", "BMS2"}:
@@ -241,13 +266,7 @@ class BatteryAnalyzer:
                 self.bms_firmware = f"0x{raw_firmware:04X}"
             return
 
-        if kind == "capacity_health":
-            health = decoded.get("percent")
-            if isinstance(health, int):
-                self.health_percent = health
-            return
-
-        if kind == "bms_status":
+        if kind in {"bms_status", "bms_telemetry"}:
             voltage = decoded.get("voltage_v")
             current = decoded.get("current_a")
             if not isinstance(voltage, (int, float)) or not isinstance(current, (int, float)):
@@ -259,31 +278,61 @@ class BatteryAnalyzer:
                 "voltage_v": voltage_f,
                 "current_a": current_f,
                 "power_w": voltage_f * current_f,
+                "bms_soc_reported_percent": decoded.get("bms_soc_reported_percent"),
+                "bms_soc_reported_raw": decoded.get("bms_soc_reported_raw"),
+                "coulomb_capacity_reported_mah": decoded.get(
+                    "coulomb_capacity_reported_mah"
+                ),
+                "voltage_capacity_reported_mah": decoded.get(
+                    "voltage_capacity_reported_mah"
+                ),
+                "register_3b_reported_raw": decoded.get("register_3b_raw"),
             }
             self._pending_cells = None
-            self._pending_temperatures = None
+            self._pending_temperatures_12 = None
+            self._pending_temperatures_34_56 = None
+            temperatures_12 = decoded.get("temperatures_12_c")
+            if isinstance(temperatures_12, list) and all(
+                value is None or isinstance(value, int) for value in temperatures_12
+            ):
+                self._pending_temperatures_12 = list(temperatures_12)
+            cells = decoded.get("cells_mv")
+            if (
+                isinstance(cells, list)
+                and len(cells) == 10
+                and all(isinstance(value, int) for value in cells)
+            ):
+                self._pending_cells = list(cells)
             self._pending_elapsed_s = elapsed_s
             self.last_status_monotonic = time.monotonic()
+            self._try_complete()
             return
 
         if kind == "cell_voltages" and self._pending_status is not None:
             cells = decoded.get("cells_mv")
-            if isinstance(cells, list) and all(isinstance(value, int) for value in cells):
+            if (
+                isinstance(cells, list)
+                and len(cells) == 10
+                and all(isinstance(value, int) for value in cells)
+            ):
                 self._pending_cells = list(cells)
                 self._try_complete()
             return
 
         if kind == "pcb_temperature_block" and self._pending_status is not None:
-            temperatures = decoded.get("temperatures_c")
-            if isinstance(temperatures, list) and all(isinstance(value, int) for value in temperatures):
-                self._pending_temperatures = list(temperatures)
+            temperatures = decoded.get("temperatures_34_56_c")
+            if isinstance(temperatures, list) and all(
+                value is None or isinstance(value, int) for value in temperatures
+            ):
+                self._pending_temperatures_34_56 = list(temperatures)
                 self._try_complete()
 
     def _try_complete(self) -> None:
         if (
             self._pending_status is None
             or self._pending_cells is None
-            or self._pending_temperatures is None
+            or self._pending_temperatures_12 is None
+            or self._pending_temperatures_34_56 is None
             or self._pending_elapsed_s is None
             or self._status_generation == self._emitted_generation
         ):
@@ -296,21 +345,38 @@ class BatteryAnalyzer:
             if self._motor_values
             else abs(self._motor_latest) if self._motor_latest is not None else None
         )
-        current_a = self._pending_status["current_a"]
+        current_a = float(self._pending_status["current_a"])
+
+        def pending_int(key: str) -> int | None:
+            value = self._pending_status.get(key)
+            return value if isinstance(value, int) else None
+
         sample = CompleteBatterySample(
             elapsed_s=self._pending_elapsed_s,
-            voltage_v=self._pending_status["voltage_v"],
+            voltage_v=float(self._pending_status["voltage_v"]),
             current_a=current_a,
-            power_w=self._pending_status["power_w"],
+            power_w=float(self._pending_status["power_w"]),
             mode=self._derive_mode(current_a, motor_abs_peak),
             cells_mv=self._pending_cells,
-            temperatures_c=self._pending_temperatures,
+            temperatures_c=(
+                self._pending_temperatures_12 + self._pending_temperatures_34_56
+            ),
             motor_power_latest_w=self._motor_latest,
             motor_power_average_w=motor_average,
             motor_power_peak_w=motor_peak,
             motor_power_abs_peak_w=motor_abs_peak,
-            soc_percent=self.soc_percent,
-            health_percent=self.health_percent,
+            ecu_soc_reported_percent=self.ecu_soc_reported_percent,
+            bms_soc_reported_percent=pending_int("bms_soc_reported_percent"),
+            bms_soc_reported_raw=pending_int("bms_soc_reported_raw"),
+            design_full_capacity_reported_mah=self.design_full_capacity_reported_mah,
+            current_full_capacity_reported_mah=self.current_full_capacity_reported_mah,
+            coulomb_capacity_reported_mah=pending_int(
+                "coulomb_capacity_reported_mah"
+            ),
+            voltage_capacity_reported_mah=pending_int(
+                "voltage_capacity_reported_mah"
+            ),
+            register_3b_reported_raw=pending_int("register_3b_reported_raw"),
             bms_serial=self.bms_serial,
             bms_firmware=self.bms_firmware,
         )
@@ -385,7 +451,11 @@ class BatteryAnalyzer:
                     highest_cell_rise_mv = max(deviations)
                     highest_cell_rise_index = deviations.index(highest_cell_rise_mv) + 1
 
-        temperatures = sample.temperatures_c
+        temperatures = [
+            temperature
+            for temperature in sample.temperatures_c
+            if temperature is not None
+        ]
         temp_min_c = min(temperatures) if temperatures else None
         temp_max_c = max(temperatures) if temperatures else None
         if temp_max_c is not None and self.initial_temperature_c is None:
@@ -403,6 +473,27 @@ class BatteryAnalyzer:
             baseline_state = "establishing"
         else:
             baseline_state = "waiting_for_rest"
+
+        design_capacity = sample.design_full_capacity_reported_mah
+        coulomb_soc_derived_percent = None
+        voltage_soc_derived_percent = None
+        soc_estimate_delta_derived_percentage_points = None
+        if design_capacity is not None and design_capacity > 0:
+            if sample.coulomb_capacity_reported_mah is not None:
+                coulomb_soc_derived_percent = (
+                    sample.coulomb_capacity_reported_mah / design_capacity * 100.0
+                )
+            if sample.voltage_capacity_reported_mah is not None:
+                voltage_soc_derived_percent = (
+                    sample.voltage_capacity_reported_mah / design_capacity * 100.0
+                )
+            if (
+                coulomb_soc_derived_percent is not None
+                and voltage_soc_derived_percent is not None
+            ):
+                soc_estimate_delta_derived_percentage_points = (
+                    voltage_soc_derived_percent - coulomb_soc_derived_percent
+                )
 
         return {
             "cell_min_mv": cell_min_mv,
@@ -425,6 +516,11 @@ class BatteryAnalyzer:
             "worst_cell_sag_index": worst_cell_sag_index,
             "highest_cell_rise_mv": highest_cell_rise_mv,
             "highest_cell_rise_index": highest_cell_rise_index,
+            "coulomb_soc_derived_percent": coulomb_soc_derived_percent,
+            "voltage_soc_derived_percent": voltage_soc_derived_percent,
+            "soc_estimate_delta_derived_percentage_points": (
+                soc_estimate_delta_derived_percentage_points
+            ),
         }
 
     def _update_peaks(self, sample: CompleteBatterySample, analytics: dict[str, object]) -> None:
@@ -488,41 +584,92 @@ class BatteryAnalyzer:
         row: dict[str, object] = {
             "timestamp_utc": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
             "elapsed_s": round(sample.elapsed_s, 3),
-            "bms_serial": sample.bms_serial or "",
-            "bms_firmware": sample.bms_firmware or "",
-            "mode": sample.mode,
-            "bms_voltage_v": round(sample.voltage_v, 3),
-            "bms_current_a": round(sample.current_a, 3),
-            "bms_power_w": round(sample.power_w, 2),
-            "ecu_motor_power_latest_w": self._round_or_blank(sample.motor_power_latest_w, 2),
-            "ecu_motor_power_average_w": self._round_or_blank(sample.motor_power_average_w, 2),
-            "ecu_motor_power_peak_w": self._round_or_blank(sample.motor_power_peak_w, 2),
-            "battery_soc_percent": self._round_or_blank(sample.soc_percent),
-            "health_percent": self._round_or_blank(sample.health_percent),
-            "cell_min_mv": self._round_or_blank(analytics.get("cell_min_mv")),
-            "cell_min_index": self._round_or_blank(analytics.get("cell_min_index")),
-            "cell_max_mv": self._round_or_blank(analytics.get("cell_max_mv")),
-            "cell_max_index": self._round_or_blank(analytics.get("cell_max_index")),
-            "cell_delta_mv": self._round_or_blank(analytics.get("cell_delta_mv")),
-            "temp_min_c": self._round_or_blank(analytics.get("temp_min_c")),
-            "temp_max_c": self._round_or_blank(analytics.get("temp_max_c")),
-            "reference_voltage_v": self._round_or_blank(analytics.get("reference_voltage_v"), 3),
-            "pack_sag_v": self._round_or_blank(analytics.get("pack_sag_v"), 3),
-            "charge_rise_v": self._round_or_blank(analytics.get("charge_rise_v"), 3),
-            "resistance_estimate_mohm": self._round_or_blank(
+            "bms_serial_reported": sample.bms_serial or "",
+            "bms_firmware_reported": sample.bms_firmware or "",
+            "mode_derived": sample.mode,
+            "bms_voltage_reported_v": round(sample.voltage_v, 3),
+            "bms_current_reported_a": round(sample.current_a, 3),
+            "bms_power_derived_w": round(sample.power_w, 2),
+            "ecu_motor_power_latest_reported_w": self._round_or_blank(
+                sample.motor_power_latest_w, 2
+            ),
+            "ecu_motor_power_average_derived_w": self._round_or_blank(
+                sample.motor_power_average_w, 2
+            ),
+            "ecu_motor_power_peak_derived_w": self._round_or_blank(
+                sample.motor_power_peak_w, 2
+            ),
+            "ecu_soc_reported_percent": self._round_or_blank(
+                sample.ecu_soc_reported_percent
+            ),
+            "bms_soc_reported_percent": self._round_or_blank(
+                sample.bms_soc_reported_percent
+            ),
+            "bms_soc_reported_raw": self._round_or_blank(sample.bms_soc_reported_raw),
+            "bms_design_full_capacity_reported_mah": self._round_or_blank(
+                sample.design_full_capacity_reported_mah
+            ),
+            "bms_current_full_capacity_reported_mah": self._round_or_blank(
+                sample.current_full_capacity_reported_mah
+            ),
+            "bms_coulomb_capacity_reported_mah": self._round_or_blank(
+                sample.coulomb_capacity_reported_mah
+            ),
+            "bms_voltage_capacity_reported_mah": self._round_or_blank(
+                sample.voltage_capacity_reported_mah
+            ),
+            "bms_coulomb_soc_derived_percent": self._round_or_blank(
+                analytics.get("coulomb_soc_derived_percent"), 2
+            ),
+            "bms_voltage_soc_derived_percent": self._round_or_blank(
+                analytics.get("voltage_soc_derived_percent"), 2
+            ),
+            "bms_soc_estimate_delta_derived_percentage_points": self._round_or_blank(
+                analytics.get("soc_estimate_delta_derived_percentage_points"), 2
+            ),
+            "bms_register_3b_reported_raw": self._round_or_blank(
+                sample.register_3b_reported_raw
+            ),
+            "cell_min_derived_mv": self._round_or_blank(analytics.get("cell_min_mv")),
+            "cell_min_derived_index": self._round_or_blank(analytics.get("cell_min_index")),
+            "cell_max_derived_mv": self._round_or_blank(analytics.get("cell_max_mv")),
+            "cell_max_derived_index": self._round_or_blank(analytics.get("cell_max_index")),
+            "cell_delta_derived_mv": self._round_or_blank(analytics.get("cell_delta_mv")),
+            "temp_min_derived_c": self._round_or_blank(analytics.get("temp_min_c")),
+            "temp_max_derived_c": self._round_or_blank(analytics.get("temp_max_c")),
+            "reference_voltage_derived_v": self._round_or_blank(
+                analytics.get("reference_voltage_v"), 3
+            ),
+            "pack_sag_derived_v": self._round_or_blank(analytics.get("pack_sag_v"), 3),
+            "charge_rise_derived_v": self._round_or_blank(
+                analytics.get("charge_rise_v"), 3
+            ),
+            "resistance_estimate_derived_mohm": self._round_or_blank(
                 analytics.get("resistance_estimate_mohm"), 2
             ),
-            "worst_cell_sag_mv": self._round_or_blank(analytics.get("worst_cell_sag_mv"), 1),
-            "worst_cell_sag_index": self._round_or_blank(analytics.get("worst_cell_sag_index")),
-            "highest_cell_rise_mv": self._round_or_blank(analytics.get("highest_cell_rise_mv"), 1),
-            "highest_cell_rise_index": self._round_or_blank(analytics.get("highest_cell_rise_index")),
+            "worst_cell_sag_derived_mv": self._round_or_blank(
+                analytics.get("worst_cell_sag_mv"), 1
+            ),
+            "worst_cell_sag_derived_index": self._round_or_blank(
+                analytics.get("worst_cell_sag_index")
+            ),
+            "highest_cell_rise_derived_mv": self._round_or_blank(
+                analytics.get("highest_cell_rise_mv"), 1
+            ),
+            "highest_cell_rise_derived_index": self._round_or_blank(
+                analytics.get("highest_cell_rise_index")
+            ),
         }
 
         for index in range(10):
-            row[f"cell_{index + 1}_mv"] = sample.cells_mv[index] if index < len(sample.cells_mv) else ""
-        for index in range(4):
-            row[f"temp_{index + 1}_c"] = (
-                sample.temperatures_c[index] if index < len(sample.temperatures_c) else ""
+            row[f"cell_{index + 1}_reported_mv"] = (
+                sample.cells_mv[index] if index < len(sample.cells_mv) else ""
+            )
+        for index in range(6):
+            row[f"temp_{index + 1}_reported_c"] = (
+                self._round_or_blank(sample.temperatures_c[index])
+                if index < len(sample.temperatures_c)
+                else ""
             )
 
         self._csv_writer.writerow(row)
