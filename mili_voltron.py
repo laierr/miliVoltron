@@ -216,7 +216,7 @@ def decode_packet(packet: Packet) -> dict[str, object]:
             result: dict[str, object] = {
                 "kind": "bms_telemetry" if len(p) >= 52 else "bms_status",
                 "bool_flags_raw": u16(p, 0),
-                "remaining_capacity_reported_mah": u16(p, 2),
+                "remaining_capacity_reported_mah": i16(p, 2),
                 "status_prefix_hex": p[:6].hex(),
                 "current_raw": current_raw,
                 "current_a": round(current_a, 3),
@@ -229,16 +229,20 @@ def decode_packet(packet: Packet) -> dict[str, object]:
                 result["temperatures_12_c"] = decode_temperature_word(u16(p, 10))
             if len(p) >= 24:
                 result.update({
-                    "coulomb_capacity_reported_mah": u16(p, 18),
-                    "voltage_capacity_reported_mah": u16(p, 20),
+                    "coulomb_capacity_reported_mah": i16(p, 18),
+                    "voltage_capacity_reported_mah": i16(p, 20),
                     "register_3b_raw": u16(p, 22),
                 })
             if len(p) >= 30:
-                soc_raw = u16(p, 28)
+                # Capacities and SOC are signed. Accept only a usable 0..100%
+                # range; values outside that (including the 0xFFFF / -1 sentinel)
+                # are treated as invalid / unavailable.
+                soc_raw = i16(p, 28)
+                soc_invalid = soc_raw < 0 or soc_raw > 100
                 result.update({
                     "bms_soc_reported_raw": soc_raw,
-                    "bms_soc_reported_percent": None if soc_raw == 0xFFFF else soc_raw,
-                    "bms_soc_reported_valid": soc_raw != 0xFFFF,
+                    "bms_soc_reported_percent": None if soc_invalid else soc_raw,
+                    "bms_soc_reported_valid": not soc_invalid,
                 })
             if len(p) >= 52:
                 cells = [u16(p, offset) for offset in range(32, 52, 2)]
@@ -269,8 +273,8 @@ def decode_packet(packet: Packet) -> dict[str, object]:
             })
         if packet.src in (0x22, 0x23) and len(p) >= 20:
             result.update({
-                "design_full_capacity_reported_mah": u16(p, 16),
-                "current_full_capacity_reported_mah": u16(p, 18),
+                "design_full_capacity_reported_mah": i16(p, 16),
+                "current_full_capacity_reported_mah": i16(p, 18),
             })
         if packet.src in (0x22, 0x23) and len(p) >= 24:
             result.update({
@@ -980,9 +984,10 @@ class TerminalDashboard:
             )
             bms_soc_raw = getattr(sample, "bms_soc_reported_raw", None)
             bms_soc = getattr(sample, "bms_soc_reported_percent", None)
-            bms_soc_text = "INVALID (0xFFFF)" if bms_soc_raw == 0xFFFF else self._value(
-                bms_soc, "%", 1
-            )
+            if bms_soc is None and isinstance(bms_soc_raw, int):
+                bms_soc_text = f"INVALID ({bms_soc_raw})"
+            else:
+                bms_soc_text = self._value(bms_soc, "%", 1)
             coulomb_soc = (
                 analytics.get("coulomb_soc_derived_percent")
                 if isinstance(analytics, dict)

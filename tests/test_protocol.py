@@ -70,10 +70,57 @@ class PacketTests(unittest.TestCase):
         self.assertEqual(decoded["kind"], "bms_telemetry")
         self.assertEqual(decoded["coulomb_capacity_reported_mah"], 23932)
         self.assertEqual(decoded["voltage_capacity_reported_mah"], 23375)
-        self.assertEqual(decoded["bms_soc_reported_raw"], 0xFFFF)
+        self.assertEqual(decoded["bms_soc_reported_raw"], -1)
         self.assertIsNone(decoded["bms_soc_reported_percent"])
         self.assertEqual(decoded["temperatures_12_c"], [19, 19])
         self.assertEqual(len(decoded["cells_mv"]), 10)
+
+    def test_capacity_and_soc_fields_decode_as_signed(self) -> None:
+        # Voltage-capacity -2589 and coulomb-capacity -7560 previously wrapped
+        # to large unsigned values (62947 / 57976) when decoded as u16.
+        payload = bytes.fromhex(
+            "01 00 0B 5D 55 00 00 00 91 0F 27 27 00 00 00 00 "
+            "00 00 78 E2 E3 F5 00 00 00 00 00 00 FE FF 00 00 "
+            "85 0F 8D 0F 8C 0F 8F 0F 8C 0F 97 0F 9A 0F 98 0F "
+            "9A 0F 99 0F FF FF FF FF FF FF FF FF FF FF FF FF"
+        )
+        packet = Packet(
+            timestamp_ns=0,
+            raw=build_packet(0x22, 0x3D, 0x04, 0x30, payload),
+        )
+
+        decoded = decode_packet(packet)
+
+        self.assertEqual(decoded["coulomb_capacity_reported_mah"], -7560)
+        self.assertEqual(decoded["voltage_capacity_reported_mah"], -2589)
+        self.assertEqual(decoded["bms_soc_reported_raw"], -2)
+        self.assertIsNone(decoded["bms_soc_reported_percent"])
+        self.assertFalse(decoded["bms_soc_reported_valid"])
+
+        # Out-of-range positive SOC is also invalid.
+        high_soc_payload = bytearray(payload)
+        high_soc_payload[28:30] = (101).to_bytes(2, "little", signed=True)
+        high_soc = decode_packet(
+            Packet(
+                timestamp_ns=0,
+                raw=build_packet(0x22, 0x3D, 0x04, 0x30, bytes(high_soc_payload)),
+            )
+        )
+        self.assertEqual(high_soc["bms_soc_reported_raw"], 101)
+        self.assertIsNone(high_soc["bms_soc_reported_percent"])
+        self.assertFalse(high_soc["bms_soc_reported_valid"])
+
+        identity = (
+            b"BPECV22AAB1001"
+            + bytes.fromhex("52 06 E3 F5 78 E2 42 0E 01 00")
+        )
+        identity_packet = Packet(
+            timestamp_ns=0,
+            raw=build_packet(0x22, 0x3D, 0x04, 0x10, identity),
+        )
+        identity_decoded = decode_packet(identity_packet)
+        self.assertEqual(identity_decoded["design_full_capacity_reported_mah"], -2589)
+        self.assertEqual(identity_decoded["current_full_capacity_reported_mah"], -7560)
 
     def test_heartbeat_decodes_ecu_temperature_map(self) -> None:
         payload = bytes(
@@ -253,7 +300,7 @@ class BatteryAnalyzerTests(unittest.TestCase):
                 "current_a": 0.0,
                 "temperatures_12_c": [19, 19],
                 "cells_mv": [3973, 3981, 3980, 3983, 3980, 3991, 3994, 3992, 3994, 3993],
-                "bms_soc_reported_raw": 0xFFFF,
+                "bms_soc_reported_raw": -1,
                 "bms_soc_reported_percent": None,
                 "coulomb_capacity_reported_mah": 23932,
                 "voltage_capacity_reported_mah": 23375,
@@ -313,7 +360,7 @@ class BatteryAnalyzerTests(unittest.TestCase):
                 "current_a": 0.0,
                 "temperatures_12_c": [19, 19],
                 "cells_mv": [3973, 3981, 3980, 3983, 3980, 3991, 3994, 3992, 3994, 3993],
-                "bms_soc_reported_raw": 0xFFFF,
+                "bms_soc_reported_raw": -1,
                 "bms_soc_reported_percent": None,
                 "coulomb_capacity_reported_mah": 23932,
                 "voltage_capacity_reported_mah": 23375,
