@@ -37,7 +37,9 @@ from mili_voltron_infodump import (
     InfoDumpSession,
     build_infodump_snapshot,
     infodump_path,
+    render_infodump,
     write_infodump,
+    write_infodump_csv,
 )
 from mili_voltron_polling import InquisitorPoller
 
@@ -1153,7 +1155,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dashboard", action="store_true")
     parser.add_argument(
         "--infodump", action="store_true",
-        help="read the known BMS register map once and save JSON under the battery-log directory",
+        help="print the known BMS register map once and save CSV/JSON under battery-log",
     )
     parser.add_argument("--refresh-rate", type=float)
     parser.add_argument("--poll-interval", type=float)
@@ -1424,10 +1426,14 @@ def main() -> int:
         requested_path = infodump_path(
             str(infodump_directory), run_timestamp, snapshot.get("battery_id")
         )
-        output_path = _unique_exact_path(str(requested_path))
-        assert output_path is not None
-        write_infodump(snapshot, output_path)
-        print(f"Infodump written to {output_path}", file=sys.stderr)
+        output_base = _numbered_base(requested_path.with_suffix(""), (".json", ".csv"))
+        json_path = _append_suffix(output_base, ".json")
+        csv_path = _append_suffix(output_base, ".csv")
+        write_infodump(snapshot, json_path)
+        write_infodump_csv(snapshot, csv_path)
+        if not args.quiet:
+            print(render_infodump(snapshot))
+        print(f"Infodump written to {json_path} and {csv_path}", file=sys.stderr)
         if infodump_session.errors:
             exit_code = 2
 

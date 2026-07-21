@@ -1,7 +1,8 @@
-"""One-shot, structured BMS information dump and JSON exporter."""
+"""One-shot BMS information dump with terminal, CSV and JSON views."""
 
 from __future__ import annotations
 
+import csv
 import json
 import re
 from collections import deque
@@ -11,6 +12,17 @@ from pathlib import Path
 from typing import Callable
 
 from mili_voltron_polling import PollRequest
+
+
+REGISTER_FIELDS = (
+    "offset",
+    "var_name",
+    "interpreted_name",
+    "decoded",
+    "hex",
+    "bin",
+    "units",
+)
 
 
 BMS_BOOL_BITS = {
@@ -378,12 +390,96 @@ def build_infodump_snapshot(
     }
 
 
+def _flat_decoded(record: dict[str, object]) -> str:
+    """Flatten structured decoded values for terminal and spreadsheet use."""
+    decoded = record.get("decoded")
+    if decoded is None:
+        return ""
+    if isinstance(decoded, list):
+        return "|".join(str(value) for value in decoded) or "NONE"
+    if isinstance(decoded, dict):
+        return "|".join(
+            f"{name}={'NA' if value is None else value}"
+            for name, value in decoded.items()
+        )
+    return str(decoded)
+
+
+def _terminal_decoded(record: dict[str, object]) -> str:
+    decoded = _flat_decoded(record) or "—"
+    units = record.get("units")
+    return f"{decoded} {units}" if units and decoded != "—" else decoded
+
+
+def render_infodump(snapshot: dict[str, object]) -> str:
+    """Render register rows for quick terminal inspection."""
+    registers = snapshot.get("registers")
+    if not isinstance(registers, list):
+        return "No register data."
+
+    rows = [
+        (
+            str(record.get("offset") or "—"),
+            str(record.get("var_name") or "—"),
+            str(record.get("interpreted_name") or "—"),
+            _terminal_decoded(record),
+            str(record.get("hex") or "—"),
+            str(record.get("bin") or "—"),
+        )
+        for record in registers
+        if isinstance(record, dict)
+    ]
+    headers = ("OFFSET", "VAR_NAME", "INTERPRETED_NAME", "DECODED", "HEX", "BIN")
+    # Serial raw bytes are the one deliberately wide special case. Do not let
+    # that single value pad the HEX column of every normal 16-bit register.
+    widths = tuple(
+        max(len(headers[column]), *(len(row[column]) for row in rows if column != 4))
+        if column != 4 else len("0xFFFF")
+        for column in range(len(headers))
+    )
+
+    def line(values: tuple[str, ...]) -> str:
+        return "  ".join(value.ljust(width) for value, width in zip(values, widths)).rstrip()
+
+    capture = snapshot.get("capture")
+    complete = isinstance(capture, dict) and bool(capture.get("complete"))
+    status = "complete" if complete else "PARTIAL"
+    identity = snapshot.get("battery_id") or "unknown-battery"
+    output = [
+        f"BMS infodump: {identity} ({status})",
+        line(headers),
+        line(tuple("-" * width for width in widths)),
+    ]
+    output.extend(line(row) for row in rows)
+    return "\n".join(output)
+
+
 def write_infodump(snapshot: dict[str, object], path: str | Path) -> None:
+    """Write the rich, self-describing JSON form."""
     output = Path(path)
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("x", encoding="utf-8") as handle:
         json.dump(snapshot, handle, indent=2, ensure_ascii=False)
         handle.write("\n")
+
+
+def write_infodump_csv(snapshot: dict[str, object], path: str | Path) -> None:
+    """Write one flat, Excel-friendly row per logical register."""
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    registers = snapshot.get("registers")
+    if not isinstance(registers, list):
+        registers = []
+    # The BOM makes Excel reliably recognize the degree symbol as UTF-8.
+    with output.open("x", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=REGISTER_FIELDS, extrasaction="ignore")
+        writer.writeheader()
+        for record in registers:
+            if not isinstance(record, dict):
+                continue
+            row = {field: record.get(field) for field in REGISTER_FIELDS}
+            row["decoded"] = _flat_decoded(record)
+            writer.writerow(row)
 
 
 def infodump_path(directory: str | Path, timestamp: str, battery_id: object) -> Path:

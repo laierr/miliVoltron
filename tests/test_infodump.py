@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import tempfile
 import unittest
@@ -12,7 +14,9 @@ from mili_voltron_infodump import (
     InfoDumpSession,
     build_infodump_snapshot,
     infodump_path,
+    render_infodump,
     write_infodump,
+    write_infodump_csv,
 )
 from mili_voltron_polling import build_packet
 
@@ -147,6 +151,39 @@ class InfoDumpExportTests(unittest.TestCase):
             parsed_json = json.loads(json_path.read_text(encoding="utf-8"))
             self.assertEqual(parsed_json["schema"], "mili-voltron-infodump/v2")
             self.assertEqual(parsed_json["battery_id"], "BPECV22AAB1001")
+
+    def test_csv_writer_is_flat_and_excel_friendly(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            csv_path = Path(directory) / "dump.csv"
+            write_infodump_csv(self.snapshot, csv_path)
+
+            raw = csv_path.read_bytes()
+            self.assertTrue(raw.startswith(b"\xef\xbb\xbf"))
+            rows = list(csv.DictReader(io.StringIO(raw.decode("utf-8-sig"))))
+            registers = {row["offset"]: row for row in rows}
+            self.assertEqual(
+                list(rows[0]),
+                [
+                    "offset",
+                    "var_name",
+                    "interpreted_name",
+                    "decoded",
+                    "hex",
+                    "bin",
+                    "units",
+                ],
+            )
+            self.assertEqual(registers["0x30"]["decoded"], "PASSWORD|CHARGE|CHARGERIN")
+            self.assertEqual(registers["0x35"]["decoded"], "T1=21|T2=20")
+            self.assertEqual(registers["0x35"]["units"], "°C")
+            self.assertNotIn("bitflags", rows[0])
+
+    def test_terminal_view_places_units_beside_decoded_values(self) -> None:
+        rendered = render_infodump(self.snapshot)
+        self.assertIn("BMS infodump: BPECV22AAB1001 (complete)", rendered)
+        self.assertIn("-4.36 A", rendered)
+        self.assertIn("T1=21|T2=20 °C", rendered)
+        self.assertIn("PASSWORD|CHARGE|CHARGERIN", rendered)
 
     def test_default_filename_uses_timestamp_and_battery_id(self) -> None:
         self.assertEqual(

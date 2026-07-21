@@ -97,7 +97,7 @@ The status bar always labels this mode `ACTIVE READ-ONLY`.
 ### BMS information dump
 
 `--infodump` takes one active read-only snapshot of the known BMS register map,
-writes it as JSON, and exits:
+prints a register table, writes matching CSV and JSON files, and exits:
 
 ```bash
 ./mili-voltron.sh --infodump
@@ -117,16 +117,19 @@ Infodumps are stored under `battery-log/` using the battery serial as the ID:
 
 ```text
 battery-log/20260721-171530-BPECV22AAB1001.json
+battery-log/20260721-171530-BPECV22AAB1001.csv
 ```
 
-The JSON document contains capture metadata, raw read windows, an identity/QC
-summary, and structured register records with `offset`, `var_name`,
-`interpreted_name`, `decoded`, `hex`, `bin`, and `units`. Bitmask registers also
-include every known flag with its bit, mask, name, and active state; unknown
-active bits are preserved explicitly. Interactive bitflag rendering remains a
-TODO. If one window times out, miliVoltron still attempts the rest, writes a
-partial dump with unavailable rows marked, and exits with status 2. If the
-serial cannot be read, the filename uses `unknown-battery` as the ID.
+The terminal table puts units directly beside decoded values. The CSV contains
+one logical register per row with `offset`, `var_name`, `interpreted_name`,
+`decoded`, `hex`, `bin`, and `units`; active bitflags are joined with `|` so the
+file stays flat and easy to filter in Excel. The JSON document adds capture
+metadata, raw read windows, an identity/QC summary, and the complete definitions
+of known bitflags, including inactive flags. Unknown active bits are preserved
+explicitly. Interactive bitflag rendering remains a TODO. If one window times
+out, miliVoltron still attempts the rest, prints and writes a partial dump with
+unavailable rows marked, and exits with status 2. If the serial cannot be read,
+the filename uses `unknown-battery` as the ID.
 
 ### ioTTY
 
@@ -301,7 +304,7 @@ mili_voltron.py          framing, decoder, serial loop, dashboard and logs
 mili_voltron_defs.py     static protocol names, states, masks and errors
 mili_voltron_battery.py  coherent BMS samples, sag analytics and battery CSV
 mili_voltron_config.py   small TOML loader and defaults
-mili_voltron_infodump.py one-shot BMS register capture and JSON export
+mili_voltron_infodump.py one-shot BMS register capture, terminal view and CSV/JSON export
 mili_voltron_polling.py  frame builder and read-only Inquisitor scheduler
 mili-voltron.sh          WSL/Linux launcher and serial-port selection
 mili-voltron.toml        editable defaults
@@ -409,9 +412,9 @@ Logging stays opt-in, but prefixes no longer need to be typed every run:
 ```
 
 The default configuration creates one timestamped communication-log set under
-`comm-logs/` and one battery CSV under `battery-log/`. Infodump JSON files also
-go under `battery-log/`. Supplying an optional prefix overrides the config for
-ordinary logs:
+`comm-logs/` and one battery CSV under `battery-log/`. Infodump CSV/JSON files
+also go under `battery-log/`. Supplying an optional prefix overrides the config
+for ordinary logs:
 
 ```bash
 ./mili-voltron.sh --all-logs experiment/run01 --battery-log experiment/bt01
