@@ -1157,6 +1157,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--infodump", action="store_true",
         help="print the known BMS register map once and save CSV/JSON under battery-log",
     )
+    parser.add_argument(
+        "--terminal-only", action="store_true",
+        help="with --infodump, print the register table without creating any log files",
+    )
     parser.add_argument("--refresh-rate", type=float)
     parser.add_argument("--poll-interval", type=float)
     parser.add_argument("--response-timeout", type=float)
@@ -1183,6 +1187,17 @@ def main() -> int:
     config, _config_path = load_config(args.config)
 
     infodump_requested = args.infodump
+    if args.terminal_only and not infodump_requested:
+        raise SystemExit("--terminal-only requires --infodump")
+    if args.terminal_only and args.quiet:
+        raise SystemExit("--terminal-only cannot be combined with --quiet")
+    explicit_logs = (
+        args.all_logs is not None
+        or args.battery_log is not None
+        or any((args.raw_log, args.decoded_log, args.combined_log, args.jsonl))
+    )
+    if args.terminal_only and explicit_logs:
+        raise SystemExit("--terminal-only cannot be combined with log-output options")
     if infodump_requested and args.dashboard:
         raise SystemExit("--infodump is a one-shot command and cannot be combined with --dashboard")
     if infodump_requested and args.mode == "passive":
@@ -1234,7 +1249,9 @@ def main() -> int:
         combined_log = combined_log or str(_append_suffix(base, ".combined.log"))
         jsonl_log = jsonl_log or str(_append_suffix(base, ".jsonl"))
 
-    if args.battery_log is not None:
+    if args.terminal_only:
+        battery_log = None
+    elif args.battery_log is not None:
         base = _configured_prefix(
             args.battery_log,
             directory=logging_cfg.get("battery_log_directory", "battery-log"),
@@ -1247,6 +1264,11 @@ def main() -> int:
     else:
         configured_battery = config_string(logging_cfg.get("battery_log"))
         battery_log = Path(_unique_exact_path(configured_battery)) if configured_battery else None
+
+    if args.terminal_only:
+        # Terminal-only means no filesystem output, including log paths enabled
+        # in the configuration file rather than explicitly on the command line.
+        raw_log = decoded_log = combined_log = jsonl_log = None
 
     raw_log = _unique_exact_path(raw_log)
     decoded_log = _unique_exact_path(decoded_log)
@@ -1422,18 +1444,19 @@ def main() -> int:
             retries=infodump_session.retries_sent,
             unexpected_replies=infodump_session.unexpected_replies,
         )
-        infodump_directory = logging_cfg.get("battery_log_directory") or "battery-log"
-        requested_path = infodump_path(
-            str(infodump_directory), run_timestamp, snapshot.get("battery_id")
-        )
-        output_base = _numbered_base(requested_path.with_suffix(""), (".json", ".csv"))
-        json_path = _append_suffix(output_base, ".json")
-        csv_path = _append_suffix(output_base, ".csv")
-        write_infodump(snapshot, json_path)
-        write_infodump_csv(snapshot, csv_path)
         if not args.quiet:
             print(render_infodump(snapshot))
-        print(f"Infodump written to {json_path} and {csv_path}", file=sys.stderr)
+        if not args.terminal_only:
+            infodump_directory = logging_cfg.get("battery_log_directory") or "battery-log"
+            requested_path = infodump_path(
+                str(infodump_directory), run_timestamp, snapshot.get("battery_id")
+            )
+            output_base = _numbered_base(requested_path.with_suffix(""), (".json", ".csv"))
+            json_path = _append_suffix(output_base, ".json")
+            csv_path = _append_suffix(output_base, ".csv")
+            write_infodump(snapshot, json_path)
+            write_infodump_csv(snapshot, csv_path)
+            print(f"Infodump written to {json_path} and {csv_path}", file=sys.stderr)
         if infodump_session.errors:
             exit_code = 2
 

@@ -103,6 +103,13 @@ prints a register table, writes matching CSV and JSON files, and exits:
 ./mili-voltron.sh --infodump
 ```
 
+For a quick inspection without creating CSV, JSON, or configured communication
+logs, use terminal-only mode:
+
+```bash
+./mili-voltron.sh --infodump --terminal-only
+```
+
 Unlike the original Voltron implementation, miliVoltron does not request every
 named register separately. It uses four bounded reads covering `0x10..0x23`,
 `0x30..0x49`, `0x50..0x53`, and `0x70..0x7B`. This captures the same known
@@ -130,6 +137,10 @@ explicitly. Interactive bitflag rendering remains a TODO. If one window times
 out, miliVoltron still attempts the rest, prints and writes a partial dump with
 unavailable rows marked, and exits with status 2. If the serial cannot be read,
 the filename uses `unknown-battery` as the ID.
+
+`--terminal-only` cannot be combined with `--quiet` or any explicit log-output
+option. It also overrides log paths enabled in the configuration file, ensuring
+that the command writes nothing to disk.
 
 ### ioTTY
 

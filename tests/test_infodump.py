@@ -5,11 +5,13 @@ from __future__ import annotations
 import csv
 import io
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from mili_voltron import Packet
+from mili_voltron import Packet, build_parser, main
 from mili_voltron_infodump import (
     InfoDumpSession,
     build_infodump_snapshot,
@@ -76,6 +78,31 @@ class InfoDumpSessionTests(unittest.TestCase):
 
         self.assertIn(0x10, session.errors)
         self.assertEqual(Packet(timestamp_ns=0, raw=sent[-1]).index, 0x30)
+
+
+class InfoDumpCliTests(unittest.TestCase):
+    def test_terminal_only_option_is_scoped_to_infodump(self) -> None:
+        args = build_parser().parse_args(["--infodump", "--terminal-only"])
+
+        self.assertTrue(args.infodump)
+        self.assertTrue(args.terminal_only)
+
+    def test_terminal_only_requires_infodump(self) -> None:
+        with patch.object(sys, "argv", ["mili-voltron", "--terminal-only"]):
+            with self.assertRaisesRegex(SystemExit, "requires --infodump"):
+                main()
+
+    def test_terminal_only_rejects_quiet(self) -> None:
+        argv = ["mili-voltron", "--infodump", "--terminal-only", "--quiet"]
+        with patch.object(sys, "argv", argv):
+            with self.assertRaisesRegex(SystemExit, "cannot be combined with --quiet"):
+                main()
+
+    def test_terminal_only_rejects_explicit_logs(self) -> None:
+        argv = ["mili-voltron", "--infodump", "--terminal-only", "--all-logs"]
+        with patch.object(sys, "argv", argv):
+            with self.assertRaisesRegex(SystemExit, "log-output options"):
+                main()
 
 
 class InfoDumpExportTests(unittest.TestCase):
