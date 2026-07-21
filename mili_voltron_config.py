@@ -65,9 +65,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "logging": {
         "timestamp": True,
         "timestamp_format": "%Y%m%d-%H%M%S",
-        "all_logs_directory": "inq",
+        "all_logs_directory": "comm-logs",
         "all_logs_prefix": "inq",
-        "battery_log_directory": "bat-log",
+        "battery_log_directory": "battery-log",
         "battery_log_prefix": "battery",
         "raw_log": "",
         "decoded_log": "",

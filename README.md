@@ -94,6 +94,54 @@ replies are matched by source and index, with bounded timeout/retry handling.
 
 The status bar always labels this mode `ACTIVE READ-ONLY`.
 
+### BMS information dump
+
+`--infodump` takes one active read-only snapshot of the known BMS register map,
+prints a register table, writes matching CSV and JSON files, and exits:
+
+```bash
+./mili-voltron.sh --infodump
+```
+
+For a quick inspection without creating CSV, JSON, or configured communication
+logs, use terminal-only mode:
+
+```bash
+./mili-voltron.sh --infodump --terminal-only
+```
+
+Unlike the original Voltron implementation, miliVoltron does not request every
+named register separately. It uses four bounded reads covering `0x10..0x23`,
+`0x30..0x49`, `0x50..0x53`, and `0x70..0x7B`. This captures the same known
+fields, nearby unknown registers useful for reverse engineering, and the raw
+bytes behind every interpretation with far fewer request/reply turnarounds.
+
+Prefer running an infodump with the adapter connected directly to the battery's
+communication port and without the ECU on the bus. This avoids unrelated ECU
+traffic and gives the one-shot reader the cleanest request/reply path.
+
+Infodumps are stored under `battery-log/` using the battery serial as the ID:
+
+```text
+battery-log/20260721-171530-BPECV22AAB1001.json
+battery-log/20260721-171530-BPECV22AAB1001.csv
+```
+
+The terminal table puts units directly beside decoded values. The CSV contains
+one logical register per row with `offset`, `var_name`, `interpreted_name`,
+`decoded`, `hex`, `bin`, and `units`; active bitflags are joined with `|` so the
+file stays flat and easy to filter in Excel. The JSON document adds capture
+metadata, raw read windows, an identity/QC summary, and the complete definitions
+of known bitflags, including inactive flags. Unknown active bits are preserved
+explicitly. Interactive bitflag rendering remains a TODO. If one window times
+out, miliVoltron still attempts the rest, prints and writes a partial dump with
+unavailable rows marked, and exits with status 2. If the serial cannot be read,
+the filename uses `unknown-battery` as the ID.
+
+`--terminal-only` cannot be combined with `--quiet` or any explicit log-output
+option. It also overrides log paths enabled in the configuration file, ensuring
+that the command writes nothing to disk.
+
 ### ioTTY
 
 `ioTTY` is reserved for a future full IoT-emulator mode: keepalives, configuration writes, lock/unlock, deploy/pickup, and other state-changing behavior. It is intentionally **not implemented** here and remains separate from Inquisitor.
@@ -267,6 +315,7 @@ mili_voltron.py          framing, decoder, serial loop, dashboard and logs
 mili_voltron_defs.py     static protocol names, states, masks and errors
 mili_voltron_battery.py  coherent BMS samples, sag analytics and battery CSV
 mili_voltron_config.py   small TOML loader and defaults
+mili_voltron_infodump.py one-shot BMS register capture, terminal view and CSV/JSON export
 mili_voltron_polling.py  frame builder and read-only Inquisitor scheduler
 mili-voltron.sh          WSL/Linux launcher and serial-port selection
 mili-voltron.toml        editable defaults
@@ -373,8 +422,10 @@ Logging stays opt-in, but prefixes no longer need to be typed every run:
 ./mili-voltron.sh --inquisitor --dashboard --all-logs --battery-log
 ```
 
-The default configuration creates one timestamped set under `inq/` and one
-battery CSV under `bat-log/`. Supplying an optional prefix overrides the config:
+The default configuration creates one timestamped communication-log set under
+`comm-logs/` and one battery CSV under `battery-log/`. Infodump CSV/JSON files
+also go under `battery-log/`. Supplying an optional prefix overrides the config
+for ordinary logs:
 
 ```bash
 ./mili-voltron.sh --all-logs experiment/run01 --battery-log experiment/bt01
@@ -421,7 +472,7 @@ in a separate virtualenv:
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-figures.txt
-python make_figures.py bat-log/SESSION.csv -o figures/
+python make_figures.py battery-log/SESSION.csv -o figures/
 ```
 
 `.venv/` is gitignored.

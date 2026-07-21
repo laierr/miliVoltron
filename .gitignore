@@ -9,6 +9,8 @@ dist/
 venv/
 
 captures/
+comm-logs/
+battery-log/
 inq/
 bat-log/
 figures/
