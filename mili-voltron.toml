@@ -46,12 +46,12 @@ baseline_window_samples = 3
 resistance_min_current_a = 2.0
 
 [logging]
-# Logging remains opt-in via --all-logs and/or --battery-log. These values only
-# provide automatic directories, prefixes and a shared run timestamp.
+# Logging remains opt-in via --all-logs and/or --battery-log. --infodump also
+# uses battery_log_directory. These values provide automatic directories,
+# prefixes and a shared run timestamp.
 timestamp = true
 timestamp_format = "%Y%m%d-%H%M%S"
-all_logs_directory = "inq"
+all_logs_directory = "comm-logs"
 all_logs_prefix = "inq"
-battery_log_directory = "bat-log"
+battery_log_directory = "battery-log"
 battery_log_prefix = "battery"
-

@@ -33,6 +33,7 @@ py-modules = [
   "mili_voltron_battery",
   "mili_voltron_config",
   "mili_voltron_defs",
+  "mili_voltron_infodump",
   "mili_voltron_polling",
 ]
 include-package-data = true

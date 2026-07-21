@@ -33,6 +33,12 @@ from mili_voltron_defs import (
     SOF,
     VEHICLE_STATES,
 )
+from mili_voltron_infodump import (
+    InfoDumpSession,
+    build_infodump_snapshot,
+    infodump_path,
+    write_infodump,
+)
 from mili_voltron_polling import InquisitorPoller
 
 
@@ -1145,6 +1151,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-b", "--baud", type=int)
     parser.add_argument("--label", default="RX")
     parser.add_argument("--dashboard", action="store_true")
+    parser.add_argument(
+        "--infodump", action="store_true",
+        help="read the known BMS register map once and save JSON under the battery-log directory",
+    )
     parser.add_argument("--refresh-rate", type=float)
     parser.add_argument("--poll-interval", type=float)
     parser.add_argument("--response-timeout", type=float)
@@ -1170,6 +1180,12 @@ def main() -> int:
     args = build_parser().parse_args()
     config, _config_path = load_config(args.config)
 
+    infodump_requested = args.infodump
+    if infodump_requested and args.dashboard:
+        raise SystemExit("--infodump is a one-shot command and cannot be combined with --dashboard")
+    if infodump_requested and args.mode == "passive":
+        raise SystemExit("--infodump requires active read-only access; remove --mode passive")
+
     if args.list_ports:
         ports = discover_ports()
         if ports:
@@ -1182,9 +1198,9 @@ def main() -> int:
     if selected_sources > 1:
         raise SystemExit("choose only one of --port, --binary, or --hex")
 
-    mode = "inquisitor" if args.inquisitor else (args.mode or "passive")
+    mode = "inquisitor" if args.inquisitor or infodump_requested else (args.mode or "passive")
     if mode == "inquisitor" and (args.binary is not None or args.hex_file is not None):
-        raise SystemExit("Inquisitor mode requires a live serial port")
+        raise SystemExit("active read-only modes require a live serial port")
 
     baud = args.baud or int(config["serial"]["baud"])
     refresh_hz = args.refresh_rate or float(config["dashboard"]["refresh_hz"])
@@ -1205,7 +1221,7 @@ def main() -> int:
     if args.all_logs is not None:
         base = _configured_prefix(
             args.all_logs,
-            directory=logging_cfg.get("all_logs_directory", "inq"),
+            directory=logging_cfg.get("all_logs_directory", "comm-logs"),
             prefix=logging_cfg.get("all_logs_prefix", "inq"),
             timestamp_enabled=timestamp_enabled,
             timestamp_text=run_timestamp,
@@ -1219,7 +1235,7 @@ def main() -> int:
     if args.battery_log is not None:
         base = _configured_prefix(
             args.battery_log,
-            directory=logging_cfg.get("battery_log_directory", "bat-log"),
+            directory=logging_cfg.get("battery_log_directory", "battery-log"),
             prefix=logging_cfg.get("battery_log_prefix", "battery"),
             timestamp_enabled=timestamp_enabled,
             timestamp_text=run_timestamp,
@@ -1258,8 +1274,16 @@ def main() -> int:
     model = DashboardModel(config)
 
     poller: InquisitorPoller | None = None
+    infodump_session: InfoDumpSession | None = None
     if mode == "inquisitor":
         inquisitor_cfg = config["inquisitor"]
+    if infodump_requested:
+        infodump_session = InfoDumpSession(
+            response_timeout_s=args.response_timeout or float(inquisitor_cfg["response_timeout_s"]),
+            inter_request_gap_s=float(inquisitor_cfg["inter_request_gap_s"]),
+            retries=int(inquisitor_cfg["retries"]),
+        )
+    elif mode == "inquisitor":
         poller = InquisitorPoller(
             poll_interval_s=args.poll_interval or float(inquisitor_cfg["poll_interval_s"]),
             response_timeout_s=args.response_timeout or float(inquisitor_cfg["response_timeout_s"]),
@@ -1301,6 +1325,8 @@ def main() -> int:
         if not tx:
             analyzer.update(decoded, relative, device_name(packet.src))
             model.update(decoded, relative, device_name(packet.src), analyzer)
+            if infodump_session is not None:
+                infodump_session.observe_packet(packet, now)
             if poller is not None:
                 poller.observe(
                     src=packet.src,
@@ -1315,7 +1341,7 @@ def main() -> int:
             packet=packet, relative=relative, delta_ms=delta_ms, label=label,
             packet_no=packet_no, decoded=decoded,
         )
-        if dashboard is None and not args.quiet:
+        if dashboard is None and infodump_session is None and not args.quiet:
             print_packet(packet, relative, delta_ms, label, decoded, colour)
 
     try:
@@ -1345,6 +1371,8 @@ def main() -> int:
                         for packet in framer.feed(chunk, timestamp_ns):
                             process(packet, args.label)
                     now = time.monotonic()
+                    if infodump_session is not None:
+                        infodump_session.tick(now, send_frame)
                     if poller is not None:
                         poller.tick(now, send_frame)
                     elapsed_s = now - start_wall
@@ -1355,6 +1383,8 @@ def main() -> int:
                     if dashboard is not None and now >= next_render:
                         dashboard.render(now, elapsed_s)
                         next_render = now + 1.0 / refresh_hz
+                    if infodump_session is not None and infodump_session.complete:
+                        break
             finally:
                 transport.close()
         else:
@@ -1373,8 +1403,36 @@ def main() -> int:
         analyzer.close()
         logs.close()
 
+    exit_code = 0
+    if infodump_session is not None:
+        if not infodump_session.complete:
+            for request in InfoDumpSession.REQUESTS:
+                if request.index not in infodump_session.blocks:
+                    infodump_session.errors.setdefault(
+                        request.index, "capture interrupted before a matching reply was received"
+                    )
+        snapshot = build_infodump_snapshot(
+            infodump_session.blocks,
+            infodump_session.errors,
+            port=port_label,
+            baud=baud,
+            sent=infodump_session.sent,
+            retries=infodump_session.retries_sent,
+            unexpected_replies=infodump_session.unexpected_replies,
+        )
+        infodump_directory = logging_cfg.get("battery_log_directory") or "battery-log"
+        requested_path = infodump_path(
+            str(infodump_directory), run_timestamp, snapshot.get("battery_id")
+        )
+        output_path = _unique_exact_path(str(requested_path))
+        assert output_path is not None
+        write_infodump(snapshot, output_path)
+        print(f"Infodump written to {output_path}", file=sys.stderr)
+        if infodump_session.errors:
+            exit_code = 2
+
     print(f"Captured {packet_no} complete packets.", file=sys.stderr)
-    return 0
+    return exit_code
 
 
 if __name__ == "__main__":
